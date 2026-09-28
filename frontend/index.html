@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MC-EC2</title>
+<style>
+  :root { --bg: #f4f4f1; --card: #fff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dc;
+          --green: #2f7d32; --amber: #b26a00; --red: #b3261e; --accent: #2f5d8a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 32px 16px; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, sans-serif; }
+  main { max-width: 480px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .row { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: 6px;
+          font: inherit; font-family: ui-monospace, monospace; }
+  button { padding: 9px 16px; border: 0; border-radius: 6px; font: inherit; font-weight: 600;
+           cursor: pointer; background: var(--accent); color: #fff; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  #panel { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 16px; }
+  dl { display: grid; grid-template-columns: 90px 1fr; gap: 8px 12px; margin: 0 0 18px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .state { font-weight: 600; }
+  .state.running { color: var(--green); }
+  .state.pending, .state.stopping { color: var(--amber); }
+  .state.stopped { color: var(--muted); }
+  code { font-family: ui-monospace, monospace; }
+  .actions { display: flex; gap: 8px; }
+  #error { color: var(--red); margin-top: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Minecraft Server</h1>
+  <div class="card">
+    <form id="lookup">
+      <label for="iid">EC2 instance ID</label>
+      <div class="row">
+        <input id="iid" placeholder="i-0123456789abcdef0" autocomplete="off" spellcheck="false" required>
+        <button type="submit" class="secondary">Load</button>
+      </div>
+    </form>
+
+    <div id="panel" hidden>
+      <dl>
+        <dt>State</dt>   <dd><span id="state" class="state">—</span></dd>
+        <dt>Address</dt> <dd id="address">—</dd>
+        <dt>Players</dt> <dd id="players">—</dd>
+        <dt>Version</dt> <dd id="version">—</dd>
+      </dl>
+      <div class="actions">
+        <button id="start">Start</button>
+        <button id="stop">Stop</button>
+        <button id="refresh" class="secondary">Refresh</button>
+      </div>
+    </div>
+    <div id="error" hidden></div>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let instanceId = null;
+let pollTimer = null;
+
+function showError(msg) {
+  $("error").textContent = msg || "";
+  $("error").hidden = !msg;
+}
+
+async function api(method, path) {
+  const res = await fetch(`/api/servers/${encodeURIComponent(instanceId)}${path}`, { method });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || `Request failed (${res.status})`);
+  return body;
+}
+
+function render(s) {
+  $("panel").hidden = false;
+  $("state").textContent = s.state;
+  $("state").className = `state ${s.state}`;
+  $("address").innerHTML = s.ip ? `<code>${s.ip}</code>` : "—";
+  const mc = s.minecraft;
+  $("players").textContent = mc ? `${mc.online} / ${mc.max}` :
+    s.state === "running" ? "Minecraft starting…" : "—";
+  $("version").textContent = mc ? mc.version : "—";
+  $("start").disabled = s.state !== "stopped";
+  $("stop").disabled = s.state !== "running";
+
+  // Keep polling while AWS or Minecraft is still transitioning
+  clearTimeout(pollTimer);
+  const settling = s.state === "pending" || s.state === "stopping" || (s.state === "running" && !mc);
+  if (settling) pollTimer = setTimeout(refresh, 5000);
+}
+
+async function refresh() {
+  if (!instanceId) return;
+  try {
+    render(await api("GET", ""));
+    showError(null);
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+async function act(action) {
+  $("start").disabled = $("stop").disabled = true;
+  try {
+    await api("POST", `/${action}`);
+    showError(null);
+  } catch (e) {
+    showError(e.message);
+  }
+  refresh();
+}
+
+$("lookup").addEventListener("submit", (e) => {
+  e.preventDefault();
+  instanceId = $("iid").value.trim();
+  try { localStorage.setItem("instanceId", instanceId); } catch {}
+  refresh();
+});
+$("start").addEventListener("click", () => act("start"));
+$("stop").addEventListener("click", () => act("stop"));
+$("refresh").addEventListener("click", refresh);
+
+try {
+  const saved = localStorage.getItem("instanceId");
+  if (saved) { $("iid").value = saved; instanceId = saved; refresh(); }
+} catch {}
+</script>
+</body>
+</html>
