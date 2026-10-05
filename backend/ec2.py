@@ -2,20 +2,29 @@ import os
 import time
 import boto3
 from mcstatus import JavaServer
+from botocore.config import Config
 
 #Lambda environment variable, use1 default
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 MC_PORT = 25565
 
-ec2 = boto3.client('ec2', region_name=REGION)
+# No client at import time: health and mock mode require no credentials.
+ec2 = None
+
+def get_client(region=None):
+    return ec2 if ec2 is not None else boto3.client(
+        "ec2", region_name=region or REGION,
+        config=Config(connect_timeout=3, read_timeout=5,
+                      retries={"total_max_attempts": 1}),
+    )
 
 #eg, start while stopping, stop while pending
 class InvalidState(Exception):
         """The instance is in a state where the requested action can't run yet."""
 
 #Return state and ip of instance
-def describe(instance_id):
-    resp = ec2.describe_instances(InstanceIds=[instance_id])
+def describe(instance_id, region=None):
+    resp = get_client(region).describe_instances(InstanceIds=[instance_id])
     inst = resp["Reservations"][0]["Instances"][0]
     return {"state": inst["State"]["Name"], "ip": inst.get("PublicIpAddress")}
 
@@ -24,14 +33,15 @@ def ping_minecraft(ip, timeout=3):
     if not ip:
         return None
     try:
-        s = JavaServer(ip, MC_PORT, timeout=timeout).status()
+        s = JavaServer(ip, MC_PORT, timeout=timeout).status(tries=1)
         return {"online": s.players.online, "max": s.players.max, "version": s.version.name}
+    # Offline/booting/unreachable is normal status, not an API failure.
     except Exception:
         return None
 
 #Wrap AWS instance + minecraft server info into one
-def status(instance_id):
-    info = describe(instance_id)
+def status(instance_id, region=None):
+    info = describe(instance_id) if region is None else describe(instance_id, region=region)
     info["minecraft"] = ping_minecraft(info["ip"]) if info["state"] == "running" else None
     return info
 
@@ -42,7 +52,7 @@ def start(instance_id):
         return state
     if state == "stopping":
         raise InvalidState("instance is still stopping; try again shortly")
-    resp = ec2.start_instances(InstanceIds=[instance_id])
+    resp = get_client().start_instances(InstanceIds=[instance_id])
     return resp["StartingInstances"][0]["CurrentState"]["Name"]
 
 #Attempt to stop instance
@@ -52,16 +62,16 @@ def stop(instance_id):
         return state
     if state == "pending":
         raise InvalidState("instance is still starting; try again shortly")
-    resp = ec2.stop_instances(InstanceIds=[instance_id])
+    resp = get_client().stop_instances(InstanceIds=[instance_id])
     return resp["StoppingInstances"][0]["CurrentState"]["Name"]
 
 #Poll AWS until instance returns stopped.
 def wait_until_stopped(instance_id):
-    ec2.get_waiter("instance_stopped").wait(InstanceIds=[instance_id])
+    get_client().get_waiter("instance_stopped").wait(InstanceIds=[instance_id])
 
 #Block until instance is running & MC returns a ping, returning final status or TimeoutError
 def wait_until_ready(instance_id, timeout=180, interval=5):
-    ec2.get_waiter("instance_running").wait(InstanceIds=[instance_id])
+    get_client().get_waiter("instance_running").wait(InstanceIds=[instance_id])
     deadline = time.time() + timeout
     while time.time() < deadline:
         info = status(instance_id)

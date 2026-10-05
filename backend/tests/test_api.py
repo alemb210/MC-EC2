@@ -72,3 +72,12 @@ def test_cli_status(instance_id, capsys, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["ec2.py", "status", instance_id])
     runpy.run_path(ec2.__file__, run_name="__main__")
     assert "'state': 'running'" in capsys.readouterr().out
+
+@pytest.mark.parametrize("action,expected", [("stop", "stopping"), ("start", "pending")])
+def test_cli_lifecycle(instance_id, capsys, monkeypatch, action, expected):
+    if action == "start":
+        ec2.stop(instance_id)
+        assert ec2.describe(instance_id)["state"] == "stopped"
+    monkeypatch.setattr(sys, "argv", ["ec2.py", action, instance_id])
+    runpy.run_path(ec2.__file__, run_name="__main__")
+    assert expected in capsys.readouterr().out

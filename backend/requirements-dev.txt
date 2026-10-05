@@ -1,4 +1,5 @@
 -r requirements.txt
-moto
-pytest
+pytest>=8,<10
+httpx>=0.27,<1
 httpx2
+moto
