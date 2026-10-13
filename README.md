@@ -11,7 +11,7 @@ The backend runs on AWS Lambda behind API Gateway; all AWS resources are managed
 | Method | Path | Auth | Response |
 |---|---|---|---|
 | GET | /health | none | API liveness and `mock_mode`; never contacts AWS |
-| GET | /servers/{server_id}/status | token + owner | EC2 state, Minecraft readiness, current address |
+| GET | /servers/{server_id}/status | token + owner | EC2 state, Minecraft readiness, current address, player count and version (null until ready) |
 | POST | /servers/{server_id}/start | token + owner | 202, new state (`pending`, or the current state if already running) |
 | POST | /servers/{server_id}/stop | token + owner | 202, new state (`stopping`, or the current state if already stopped) |
 | GET | /docs | none | Swagger UI |
@@ -117,7 +117,10 @@ A running server costs money; stop it when finished. Example ready response:
   "server_id": "dc9984dd-a660-636e-f9d1-3c6b20bef576",
   "instance_state": "running",
   "minecraft_ready": true,
-  "connection_address": "3.91.56.173:25565"
+  "connection_address": "3.91.56.173:25565",
+  "players_online": 2,
+  "players_max": 20,
+  "minecraft_version": "1.21.4"
 }
 ~~~
 

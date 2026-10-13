@@ -109,14 +109,18 @@ def test_frontend_and_routes_coexist():
 
 # --- Mock mode (no Cognito, no database, no AWS) ---
 
-@pytest.mark.parametrize("server,state,ready,address", [
-    ("demo-server", "running", True, "203.0.113.10:25565"),
-    ("demo-starting", "running", False, "203.0.113.11:25565"),
-    ("demo-stopped", "stopped", False, None)])
-def test_mock_status(server, state, ready, address):
+NO_PLAYERS = {"players_online": None, "players_max": None, "minecraft_version": None}
+
+@pytest.mark.parametrize("server,state,ready,address,players", [
+    ("demo-server", "running", True, "203.0.113.10:25565",
+     {"players_online": 2, "players_max": 20, "minecraft_version": "1.21.4"}),
+    ("demo-starting", "running", False, "203.0.113.11:25565", NO_PLAYERS),
+    ("demo-stopped", "stopped", False, None, NO_PLAYERS)])
+def test_mock_status(server, state, ready, address, players):
     api = TestClient(create_app(Settings(mock_mode=True)))
     assert api.get(f"/servers/{server}/status").json() == {
-        "server_id": server, "instance_state": state, "minecraft_ready": ready, "connection_address": address}
+        "server_id": server, "instance_state": state, "minecraft_ready": ready,
+        "connection_address": address, **players}
 
 @pytest.mark.parametrize("action,server,expected", [
     ("start", "demo-stopped", "pending"), ("start", "demo-server", "running"),
@@ -199,7 +203,8 @@ def test_running_minecraft_not_ready(monkeypatch, failure):
     response = real_api().get(f"/servers/{SERVER_ID}/status", headers=auth())
     assert response.status_code == 200
     assert response.json() == {"server_id": SERVER_ID, "instance_state": "running",
-                               "minecraft_ready": False, "connection_address": "203.0.113.10:25565"}
+                               "minecraft_ready": False, "connection_address": "203.0.113.10:25565",
+                               **NO_PLAYERS}
     client.describe_instances.assert_called_once_with(InstanceIds=["i-test"])
     factory.assert_called_once_with("203.0.113.10", 25565, timeout=3)
     minecraft.status.assert_called_once_with(tries=1)
@@ -211,7 +216,9 @@ def test_ready_and_address_refresh(monkeypatch):
         players=SimpleNamespace(online=0, max=20), version=SimpleNamespace(name="1.21"))
     monkeypatch.setattr(ec2, "JavaServer", Mock(return_value=minecraft))
     api = real_api()
-    assert api.get(f"/servers/{SERVER_ID}/status", headers=auth()).json()["minecraft_ready"] is True
+    body = api.get(f"/servers/{SERVER_ID}/status", headers=auth()).json()
+    assert body["minecraft_ready"] is True
+    assert (body["players_online"], body["players_max"], body["minecraft_version"]) == (0, 20, "1.21")
     client.describe_instances.return_value["Reservations"][0]["Instances"][0]["PublicIpAddress"] = "203.0.113.20"
     assert api.get(f"/servers/{SERVER_ID}/status", headers=auth()).json()["connection_address"] == "203.0.113.20:25565"
     assert client.describe_instances.call_count == 2
@@ -223,6 +230,7 @@ def test_unavailable_address(monkeypatch, state, ip):
     assert response.status_code == 200
     assert response.json()["connection_address"] is None
     assert response.json()["minecraft_ready"] is False
+    assert response.json()["players_online"] is None
 
 @pytest.mark.parametrize("error", [
     NoCredentialsError(), EndpointConnectionError(endpoint_url="https://ec2.example"),
