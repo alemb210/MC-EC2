@@ -48,8 +48,9 @@ resource "aws_cognito_user_pool_client" "web" {
   allowed_oauth_flows_user_pool_client = true
   allowed_oauth_flows                  = ["code"]
   allowed_oauth_scopes                 = ["openid", "email"]
-  callback_urls                        = ["http://localhost:3000/"]
-  logout_urls                          = ["http://localhost:3000/"]
+  # localhost for `npm run dev`; the API URL is where Lambda serves the built frontend.
+  callback_urls                        = ["http://localhost:3000/", "${aws_apigatewayv2_api.api.api_endpoint}/"]
+  logout_urls                          = ["http://localhost:3000/", "${aws_apigatewayv2_api.api.api_endpoint}/"]
   supported_identity_providers         = ["COGNITO"]
 
   prevent_user_existence_errors = "ENABLED"

@@ -25,10 +25,21 @@ python3 -m pip install --quiet --no-cache-dir \
   --python-version "$PY_VERSION" \
   --only-binary=:all:
 
-# Mirror the repo layout so backend/app.py finds ../frontend.
+# Frontend: bake the public Cognito settings into the build and ship dist/ only.
+# Assign before export so a failed terraform output stops the script (set -e).
+tf_out() { terraform -chdir="$INFRA_DIR" output -raw "$1"; }
+VITE_COGNITO_AUTHORITY="$(tf_out cognito_issuer)"
+VITE_COGNITO_CLIENT_ID="$(tf_out cognito_client_id)"
+VITE_COGNITO_DOMAIN="$(tf_out cognito_login_url)"
+VITE_SERVER_IDS="$(tf_out admin_server_id)"
+export VITE_COGNITO_AUTHORITY VITE_COGNITO_CLIENT_ID VITE_COGNITO_DOMAIN VITE_SERVER_IDS
+(cd "$ROOT_DIR/frontend" && npm ci && npm run build)
+
+# Mirror the repo layout so backend/app.py finds ../frontend/dist.
 cp "$INFRA_DIR/lambda_handler.py" "$PKG_DIR/"
 cp "$ROOT_DIR"/backend/*.py "$PKG_DIR/backend/"
-cp -R "$ROOT_DIR/frontend" "$PKG_DIR/frontend"
+mkdir -p "$PKG_DIR/frontend"
+cp -R "$ROOT_DIR/frontend/dist" "$PKG_DIR/frontend/dist"
 
 find "$PKG_DIR" -name "__pycache__" -type d -prune -exec rm -rf {} +
 (cd "$PKG_DIR" && zip -qr -X "$BUILD_DIR/api.zip" .)
