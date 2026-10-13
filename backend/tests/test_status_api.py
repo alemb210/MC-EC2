@@ -7,6 +7,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError, NoCredenti
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 import ec2
+import app as app_module
 from app import create_app
 from auth import CognitoVerifier
 from config import Settings
@@ -103,9 +104,20 @@ def test_invalid_mock_mode(monkeypatch):
 
 def test_frontend_and_routes_coexist():
     api = TestClient(create_app(Settings(mock_mode=True)))
-    assert 'id="start"' in api.get("/").text
+    assert "<title>" in api.get("/").text
     assert api.get("/health").status_code == 200
     assert api.get("/servers/demo-server/status").status_code == 200
+
+def test_frontend_not_built_fallback(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_module, "FRONTEND_DIR", tmp_path / "missing")
+    response = TestClient(create_app(Settings(mock_mode=True))).get("/")
+    assert response.status_code == 200
+    assert "npm run build" in response.text
+
+def test_frontend_built_is_served(monkeypatch, tmp_path):
+    (tmp_path / "index.html").write_text("<!doctype html><title>built</title>")
+    monkeypatch.setattr(app_module, "FRONTEND_DIR", tmp_path)
+    assert "built" in TestClient(create_app(Settings(mock_mode=True))).get("/").text
 
 # --- Mock mode (no Cognito, no database, no AWS) ---
 

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from auth import Principal, build_verifier, current_user_dependency
@@ -9,7 +10,9 @@ from db import DatabaseUnavailable, build_repository
 from models import HealthResponse, ServerAction, ServerStatus
 from service import AWSUnavailable, InvalidServerState, StatusService, UnknownServer
 
-FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+NOT_BUILT_PAGE = ("<!doctype html><title>MC-EC2</title>"
+                  "<p>Frontend not built: run <code>npm run build</code> in frontend/.</p>")
 
 # Legacy routes (/api/servers/{instance_id}) are disabled: they took raw EC2 instance IDs
 # and bypassed authentication and ownership checks. Replaced by the authenticated
@@ -99,7 +102,12 @@ def create_app(settings: Settings | None = None, verifier=None, repository=None)
     #     return {"state": call(ec2.stop, instance_id)}
 
     # Mounted last so API routes and /docs take precedence over static files.
-    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+    if FRONTEND_DIR.is_dir():
+        app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+    else:
+        @app.get("/", include_in_schema=False)
+        def frontend_not_built():
+            return HTMLResponse(NOT_BUILT_PAGE)
     return app
 
 
