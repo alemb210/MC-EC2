@@ -1,0 +1,17 @@
+# Values kept out of the public repo. Set them in terraform.tfvars (gitignored).
+
+variable "budget_alert_emails" {
+  description = "Email addresses that receive AWS budget alerts"
+  type        = list(string)
+}
+
+variable "admin_email" {
+  description = "Email (and Cognito username) of the single admin account"
+  type        = string
+}
+
+variable "admin_name" {
+  description = "Display name stored in users.name for the admin"
+  type        = string
+  default     = "Admin"
+}

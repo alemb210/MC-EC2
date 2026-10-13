@@ -1,75 +1,102 @@
 from pathlib import Path
 
-from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 
-import ec2
+from auth import Principal, build_verifier, current_user_dependency
 from config import Settings
-from models import HealthResponse, ServerStatus
-from service import AWSUnavailable, StatusService, UnknownServer
+from db import DatabaseUnavailable, build_repository
+from models import HealthResponse, ServerAction, ServerStatus
+from service import AWSUnavailable, InvalidServerState, StatusService, UnknownServer
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
+# Legacy routes (/api/servers/{instance_id}) are disabled: they took raw EC2 instance IDs
+# and bypassed authentication and ownership checks. Replaced by the authenticated
+# /servers/{server_id}/start and /stop routes below.
+#
+# from botocore.exceptions import BotoCoreError, ClientError
+# import ec2
+#
+# def call(fn, instance_id):
+#     try:
+#         return fn(instance_id)
+#     except ec2.InvalidState as e:
+#         raise HTTPException(409, str(e)) from None
+#     except ClientError as e:
+#         code = e.response["Error"]["Code"]
+#         if code.startswith("InvalidInstanceID"):
+#             raise HTTPException(404, f"instance {instance_id} not found") from None
+#         raise HTTPException(502, f"AWS error: {code}") from None
+#     except BotoCoreError:
+#         raise HTTPException(502, "Unable to contact AWS. Check credentials and connectivity.") from None
 
-# Preserve the original helper and legacy error/response contracts.
-def call(fn, instance_id):
-    try:
-        return fn(instance_id)
-    except ec2.InvalidState as e:
-        raise HTTPException(409, str(e)) from None
-    except ClientError as e:
-        code = e.response["Error"]["Code"]
-        if code.startswith("InvalidInstanceID"):
-            raise HTTPException(404, f"instance {instance_id} not found") from None
-        raise HTTPException(502, f"AWS error: {code}") from None
-    except BotoCoreError:
-        raise HTTPException(502, "Unable to contact AWS. Check credentials and connectivity.") from None
+SERVER_ERRORS = {
+    401: {"description": "Missing, invalid, or expired access token"},
+    404: {"description": "Unknown server, or not owned by the caller"},
+    502: {"description": "AWS could not be reached"},
+    503: {"description": "Database or authentication temporarily unavailable"},
+}
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, verifier=None, repository=None) -> FastAPI:
     settings = settings if settings is not None else Settings.from_env()
-    service = StatusService(settings)
+    verifier = verifier if verifier is not None else build_verifier(settings)
+    repository = repository if repository is not None else build_repository(settings)
+    service = StatusService(settings, repository)
+    current_user = current_user_dependency(settings, verifier)
     app = FastAPI(
         title="MC-EC2",
-        description="Local prototype with health/status and existing frontend/EC2 lifecycle routes. Authentication and ownership checks are required before public deployment.",
+        description="Minecraft server lifecycle API. Server routes require a Cognito access token "
+                    "(Authorization: Bearer) and only act on servers the caller owns.",
     )
 
     @app.get("/health", response_model=HealthResponse)
     def health():
         return HealthResponse(mock_mode=settings.mock_mode)
 
-    # Synchronous routes run in FastAPI's worker thread pool, keeping blocking
-    # SDK and Minecraft calls off the async event loop.
-    @app.get("/servers/{server_id}/status", response_model=ServerStatus,
-             responses={404: {"description": "Unknown application server ID"},
-                        502: {"description": "AWS status could not be retrieved"}})
-    def status(server_id: str):
+    def run(fn, server_id: str, principal: Principal):
         try:
-            return service.status(server_id)
+            return fn(server_id, principal)
         except UnknownServer:
             raise HTTPException(404, "Unknown server ID") from None
+        except InvalidServerState as e:
+            raise HTTPException(409, str(e)) from None
+        except DatabaseUnavailable as e:
+            headers = {"Retry-After": str(e.retry_after)} if e.retry_after else None
+            raise HTTPException(503, "Database unavailable. Try again shortly.", headers=headers) from None
         except AWSUnavailable:
-            raise HTTPException(502, "Unable to retrieve EC2 status. Check AWS credentials, region, permissions, and connectivity.") from None
+            raise HTTPException(502, "Unable to reach EC2. Check AWS credentials, region, permissions, and connectivity.") from None
 
-    def legacy_call(fn, instance_id):
-        # Legacy routes use real instance IDs, not application IDs. They have no
-        # mock implementation; block them in mock mode to prevent AWS access.
-        if settings.mock_mode:
-            raise HTTPException(503, "Legacy EC2 routes require MOCK_MODE=false.")
-        return call(fn, instance_id)
+    # Synchronous routes run in FastAPI's worker thread pool, keeping blocking
+    # SDK and Minecraft calls off the async event loop.
+    @app.get("/servers/{server_id}/status", response_model=ServerStatus, responses=SERVER_ERRORS)
+    def status(server_id: str, principal: Principal = Depends(current_user)):
+        return run(service.status, server_id, principal)
 
-    @app.get("/api/servers/{instance_id}")
-    def get_status(instance_id: str):
-        return legacy_call(ec2.status, instance_id)
+    @app.post("/servers/{server_id}/start", response_model=ServerAction, status_code=202,
+              responses={**SERVER_ERRORS, 409: {"description": "Instance is still stopping"}})
+    def start(server_id: str, principal: Principal = Depends(current_user)):
+        return run(service.start, server_id, principal)
 
-    @app.post("/api/servers/{instance_id}/start")
-    def start(instance_id: str):
-        return {"state": legacy_call(ec2.start, instance_id)}
+    @app.post("/servers/{server_id}/stop", response_model=ServerAction, status_code=202,
+              responses={**SERVER_ERRORS, 409: {"description": "Instance is still starting"}})
+    def stop(server_id: str, principal: Principal = Depends(current_user)):
+        return run(service.stop, server_id, principal)
 
-    @app.post("/api/servers/{instance_id}/stop")
-    def stop(instance_id: str):
-        return {"state": legacy_call(ec2.stop, instance_id)}
+    # Legacy routes, disabled (see the note at the top of this file).
+    #
+    # @app.get("/api/servers/{instance_id}")
+    # def get_status(instance_id: str):
+    #     return call(ec2.status, instance_id)
+    #
+    # @app.post("/api/servers/{instance_id}/start")
+    # def legacy_start(instance_id: str):
+    #     return {"state": call(ec2.start, instance_id)}
+    #
+    # @app.post("/api/servers/{instance_id}/stop")
+    # def legacy_stop(instance_id: str):
+    #     return {"state": call(ec2.stop, instance_id)}
 
     # Mounted last so API routes and /docs take precedence over static files.
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

@@ -7,6 +7,7 @@ os.environ.update(AWS_ACCESS_KEY_ID="test", AWS_SECRET_ACCESS_KEY="test", AWS_DE
 import boto3
 import pytest
 from fastapi.testclient import TestClient
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 import app as app_module
@@ -31,31 +32,37 @@ def api():
     return TestClient(app_module.app)
 
 
-def test_status_running(api, instance_id):
-    r = api.get(f"/api/servers/{instance_id}")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["state"] == "running"
-    assert body["ip"]
-    assert body["minecraft"] == FAKE_MC
+# The legacy /api/servers/{instance_id} routes are disabled (see app.py); the same
+# EC2 lifecycle behavior is covered here at the ec2.py level against moto.
+
+def test_status_running(instance_id):
+    info = ec2.status(instance_id)
+    assert info["state"] == "running"
+    assert info["ip"]
+    assert info["minecraft"] == FAKE_MC
 
 
-def test_stop_then_start(api, instance_id):
-    assert api.post(f"/api/servers/{instance_id}/stop").json() == {"state": "stopping"}
-    stopped = api.get(f"/api/servers/{instance_id}").json()
-    assert stopped == {"state": "stopped", "ip": None, "minecraft": None}
-    assert api.post(f"/api/servers/{instance_id}/start").json() == {"state": "pending"}
+def test_stop_then_start(instance_id):
+    assert ec2.stop(instance_id) == "stopping"
+    assert ec2.status(instance_id) == {"state": "stopped", "ip": None, "minecraft": None}
+    assert ec2.start(instance_id) == "pending"
 
 
-def test_start_while_stopping_conflicts(api, instance_id, monkeypatch):
+def test_start_while_stopping_conflicts(instance_id, monkeypatch):
     monkeypatch.setattr(ec2, "describe", lambda iid: {"state": "stopping", "ip": None})
-    r = api.post(f"/api/servers/{instance_id}/start")
-    assert r.status_code == 409
+    with pytest.raises(ec2.InvalidState):
+        ec2.start(instance_id)
 
 
-def test_unknown_instance(api, instance_id):
-    r = api.get("/api/servers/i-00000000000000000")
-    assert r.status_code == 404
+def test_unknown_instance(instance_id):
+    with pytest.raises(ClientError) as exc:
+        ec2.status("i-00000000000000000")
+    assert exc.value.response["Error"]["Code"].startswith("InvalidInstanceID")
+
+
+def test_legacy_routes_removed(api):
+    assert api.get("/api/servers/i-test").status_code in (404, 405)
+    assert api.post("/api/servers/i-test/start").status_code in (404, 405)
 
 
 def test_frontend_served(api):

@@ -32,3 +32,10 @@ data/
 .vscode/
 .idea/
 *.swp
+
+# --- Terraform (state is local-only; may contain sensitive values) ---
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log

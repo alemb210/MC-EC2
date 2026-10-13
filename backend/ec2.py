@@ -46,23 +46,23 @@ def status(instance_id, region=None):
     return info
 
 #Attempt to start instance
-def start(instance_id):
-    state = describe(instance_id)["state"]
+def start(instance_id, region=None):
+    state = (describe(instance_id) if region is None else describe(instance_id, region=region))["state"]
     if state in ("running", "pending"):
         return state
     if state == "stopping":
         raise InvalidState("instance is still stopping; try again shortly")
-    resp = get_client().start_instances(InstanceIds=[instance_id])
+    resp = get_client(region).start_instances(InstanceIds=[instance_id])
     return resp["StartingInstances"][0]["CurrentState"]["Name"]
 
 #Attempt to stop instance
-def stop(instance_id):
-    state = describe(instance_id)["state"]
+def stop(instance_id, region=None):
+    state = (describe(instance_id) if region is None else describe(instance_id, region=region))["state"]
     if state in ("stopped", "stopping"):
         return state
     if state == "pending":
         raise InvalidState("instance is still starting; try again shortly")
-    resp = get_client().stop_instances(InstanceIds=[instance_id])
+    resp = get_client(region).stop_instances(InstanceIds=[instance_id])
     return resp["StoppingInstances"][0]["CurrentState"]["Name"]
 
 #Poll AWS until instance returns stopped.
