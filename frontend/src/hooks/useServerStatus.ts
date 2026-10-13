@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getStatus, startServer, stopServer, type ServerStatus } from "../api";
+import {
+  describeError, getStatus, startServer, statusFromAction, stopServer, type ServerStatus,
+} from "../api";
+import { withRecovery, type AuthSession } from "../recovery";
 
 const POLL_MS = 5000;
 
@@ -9,31 +12,40 @@ export function isSettling(s: ServerStatus): boolean {
     (s.instance_state === "running" && !s.minecraft_ready);
 }
 
-export function useServerStatus(serverId: string) {
+export function useServerStatus(serverId: string, session: AuthSession | null) {
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // A slow poll must not overwrite the newer state returned by start/stop.
   const latest = useRef(0);
+  // The session object is rebuilt every render; keep the newest one without re-running effects.
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
 
-  const run = useCallback(async (call: () => Promise<ServerStatus>) => {
+  const run = useCallback(async (call: (token?: string) => Promise<ServerStatus>) => {
     const seq = ++latest.current;
     try {
-      const next = await call();
+      const next = await withRecovery(call, sessionRef.current, {
+        onWaking: () => seq === latest.current && setNotice("Waking up the database…"),
+      });
       if (seq === latest.current) {
         setStatus(next);
         setError(null);
       }
     } catch (e) {
-      if (seq === latest.current) setError(e instanceof Error ? e.message : String(e));
+      if (seq === latest.current) setError(describeError(e));
+    } finally {
+      if (seq === latest.current) setNotice(null);
     }
   }, []);
 
-  const refresh = useCallback(() => run(() => getStatus(serverId)), [run, serverId]);
+  const refresh = useCallback(() => run((t) => getStatus(serverId, t)), [run, serverId]);
 
   const act = useCallback(async (action: "start" | "stop") => {
     setBusy(true);
-    await run(() => (action === "start" ? startServer : stopServer)(serverId));
+    const fn = action === "start" ? startServer : stopServer;
+    await run(async (t) => statusFromAction(await fn(serverId, t)));
     setBusy(false);
   }, [run, serverId]);
 
@@ -45,5 +57,5 @@ export function useServerStatus(serverId: string) {
     return () => clearTimeout(timer);
   }, [status, refresh]);
 
-  return { status, error, busy, refresh, start: () => act("start"), stop: () => act("stop") };
+  return { status, error, notice, busy, refresh, start: () => act("start"), stop: () => act("stop") };
 }

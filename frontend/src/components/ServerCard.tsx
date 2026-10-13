@@ -1,14 +1,15 @@
 import { useEffect, useState } from "react";
 import { useServerStatus } from "../hooks/useServerStatus";
 import type { ServerStatus } from "../api";
+import type { AuthSession } from "../recovery";
 
 function minecraftLabel(s: ServerStatus): string {
   if (s.minecraft_ready) return "Ready";
   return s.instance_state === "running" ? "Minecraft starting…" : "—";
 }
 
-export default function ServerCard({ serverId }: { serverId: string }) {
-  const { status, error, busy, refresh, start, stop } = useServerStatus(serverId);
+export default function ServerCard({ serverId, session }: { serverId: string; session: AuthSession | null }) {
+  const { status, error, notice, busy, refresh, start, stop } = useServerStatus(serverId, session);
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
 
@@ -57,7 +58,7 @@ export default function ServerCard({ serverId }: { serverId: string }) {
           </dd>
           <dt>Players</dt>
           <dd>{status.players_online !== null ? `${status.players_online} / ${status.players_max}` : "—"}</dd>
-          <dt>Version</dt> <dd>{status.version ?? "—"}</dd>
+          <dt>Version</dt> <dd>{status.minecraft_version ?? "—"}</dd>
         </dl>
       )}
 
@@ -67,6 +68,7 @@ export default function ServerCard({ serverId }: { serverId: string }) {
         <button className="secondary" onClick={refresh} disabled={busy}>Refresh</button>
       </div>
 
+      {notice && <p className="muted">{notice}</p>}
       {(error || copyError) && <p className="error">{error ?? copyError}</p>}
     </article>
   );

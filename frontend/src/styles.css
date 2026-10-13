@@ -44,3 +44,6 @@ button {
 button:disabled { opacity: .45; cursor: default; }
 button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--line); }
 button.link { padding: 0; background: none; color: var(--accent); font-size: 13px; }
+
+.head-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+.head-right button { padding: 5px 12px; font-size: 13px; }
