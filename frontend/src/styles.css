@@ -1,0 +1,46 @@
+:root {
+  --bg: #f4f4f1; --card: #fff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dc;
+  --green: #2f7d32; --amber: #b26a00; --red: #b3261e; --accent: #2f5d8a;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 32px 16px; background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, sans-serif;
+}
+main { max-width: 960px; margin: 0 auto; }
+code { font-family: ui-monospace, monospace; }
+.muted { color: var(--muted); }
+.error { color: var(--red); margin: 14px 0 0; }
+
+.page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+h1 { font-size: 22px; margin: 0; }
+
+.badge { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; border: 1px solid currentColor; }
+.badge.mock { color: var(--amber); }
+.badge.live { color: var(--green); }
+.badge.offline { color: var(--red); }
+.badge.loading { color: var(--muted); }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 14px; }
+.card-head h2 { font-size: 16px; margin: 0; overflow-wrap: anywhere; }
+
+dl { display: grid; grid-template-columns: 90px 1fr; gap: 8px 12px; margin: 0 0 18px; }
+dt { color: var(--muted); }
+dd { margin: 0; font-variant-numeric: tabular-nums; min-width: 0; }
+.address { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+
+.state { font-weight: 600; color: var(--muted); }
+.state.running { color: var(--green); }
+.state.pending, .state.stopping { color: var(--amber); }
+.state.shutting-down, .state.terminated { color: var(--red); }
+
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+button {
+  padding: 9px 16px; border: 0; border-radius: 6px; font: inherit; font-weight: 600;
+  cursor: pointer; background: var(--accent); color: #fff;
+}
+button:disabled { opacity: .45; cursor: default; }
+button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+button.link { padding: 0; background: none; color: var(--accent); font-size: 13px; }

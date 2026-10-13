@@ -1,0 +1,73 @@
+import { useEffect, useState } from "react";
+import { useServerStatus } from "../hooks/useServerStatus";
+import type { ServerStatus } from "../api";
+
+function minecraftLabel(s: ServerStatus): string {
+  if (s.minecraft_ready) return "Ready";
+  return s.instance_state === "running" ? "Minecraft starting…" : "—";
+}
+
+export default function ServerCard({ serverId }: { serverId: string }) {
+  const { status, error, busy, refresh, start, stop } = useServerStatus(serverId);
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
+  const state = status?.instance_state;
+  const address = status?.connection_address ?? null;
+
+  const onStop = () => {
+    const online = status?.players_online ?? 0;
+    if (online > 0 && !window.confirm(`${online} player(s) online. Stop the server anyway?`)) return;
+    stop();
+  };
+
+  const onCopy = async () => {
+    if (!address) return;
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopyError(null);
+      setCopied(true);
+    } catch {
+      setCopyError("Couldn't copy. Select the address manually.");
+    }
+  };
+
+  return (
+    <article className="card">
+      <header className="card-head">
+        <h2><code>{serverId}</code></h2>
+        <span className={`state ${state ?? ""}`}>{state ?? "loading…"}</span>
+      </header>
+
+      {status && (
+        <dl>
+          <dt>Minecraft</dt> <dd>{minecraftLabel(status)}</dd>
+          <dt>Address</dt>
+          <dd className="address">
+            {address ? <code>{address}</code> : "—"}
+            <button className="link" onClick={onCopy} disabled={!address}>
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </dd>
+          <dt>Players</dt>
+          <dd>{status.players_online !== null ? `${status.players_online} / ${status.players_max}` : "—"}</dd>
+          <dt>Version</dt> <dd>{status.version ?? "—"}</dd>
+        </dl>
+      )}
+
+      <div className="actions">
+        <button onClick={start} disabled={busy || state !== "stopped"}>Start</button>
+        <button onClick={onStop} disabled={busy || state !== "running"}>Stop</button>
+        <button className="secondary" onClick={refresh} disabled={busy}>Refresh</button>
+      </div>
+
+      {(error || copyError) && <p className="error">{error ?? copyError}</p>}
+    </article>
+  );
+}
