@@ -45,8 +45,12 @@ The FastAPI app in `backend/` is deployed unmodified:
 
 - `lambda_handler.py` wraps it with [Mangum](https://mangum.fastapiexpert.com/), which turns
   API Gateway events into ordinary HTTP requests. The Lambda handler is `lambda_handler.handler`.
-- `build_lambda.sh` builds `build/api.zip` with the repo layout (`backend/`, `frontend/`) and Linux
+- `build_lambda.sh` builds `build/api.zip` with the repo layout (`backend/`, `frontend/dist/`) and Linux
   arm64 / Python 3.12 wheels, so compiled packages (`pydantic_core`, `cryptography`) load on Lambda.
+- The script also builds the React app (`npm ci && npm run build`), so the deploy machine needs
+  Node `^20.19.0 || >=22.12.0` and an initialised Terraform directory. It bakes the public Cognito
+  values from `terraform output` into the bundle and ships `frontend/dist` only. The API URL is
+  an allowed Cognito callback and logout URL (`cognito.tf`), so the dashboard works there.
 - Dependencies: `requirements-lambda.txt` = `backend/requirements.txt` + `mangum`.
 
 ## Database

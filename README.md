@@ -15,14 +15,14 @@ The backend runs on AWS Lambda behind API Gateway; all AWS resources are managed
 | POST | /servers/{server_id}/start | token + owner | 202, new state (`pending`, or the current state if already running) |
 | POST | /servers/{server_id}/stop | token + owner | 202, new state (`stopping`, or the current state if already stopped) |
 | GET | /docs | none | Swagger UI |
-| GET | / | none | Static frontend page |
+| GET | / | none | React dashboard (`frontend/dist`); a "not built" page if the frontend hasn't been built |
 
 `server_id` is the UUID of a row in the `servers` table. Server routes require a Cognito
 **access token** (`Authorization: Bearer <token>`) and only act on servers the caller owns.
 
 The legacy `/api/servers/{instance_id}` routes are commented out in `backend/app.py`: they took raw
-EC2 instance IDs and bypassed authentication and ownership. The static page's start/stop buttons
-used them, so they no longer work until the frontend logs in and calls the new routes.
+EC2 instance IDs and bypassed authentication and ownership. The React dashboard uses the
+authenticated routes above instead.
 
 ## Architecture
 
@@ -35,13 +35,14 @@ Client ──Bearer token──► API Gateway ──► Lambda (FastAPI via Man
 
 | File | Role |
 |---|---|
-| `backend/app.py` | Routes, auth dependency, error mapping, static frontend mount |
+| `backend/app.py` | Routes, auth dependency, error mapping, serves `frontend/dist` |
 | `backend/auth.py` | Cognito access-token verification (signature, issuer, expiry, `token_use`, `client_id`) |
 | `backend/db.py` | Aurora access through the RDS Data API; ownership lookup |
 | `backend/service.py` | Business rules: ownership before any EC2 call; mock data |
 | `backend/ec2.py` | Boto3 + mcstatus wrappers; also a small CLI |
 | `backend/config.py` | Settings from environment variables |
 | `backend/models.py` | Pydantic response models |
+| `frontend/` | React + Vite dashboard with Cognito login |
 | `infra/` | Terraform, Lambda packaging, database migrations ([infra/README.md](infra/README.md)) |
 
 Database tables (proposal §IV-F): `users`, `identities` (Cognito `sub` → user), and `servers`
@@ -63,6 +64,43 @@ On Windows PowerShell use `python`, `.\.venv\Scripts\python.exe -m pip ...`, `Co
 
 Uvicorn loads `.env` via `--env-file`; existing environment variables take precedence.
 Restart after configuration changes.
+
+## Frontend
+
+The dashboard in `frontend/` (React, Vite, TypeScript) shows a card per server with its state,
+Minecraft readiness, address, players and version, plus Start, Stop, Refresh and Copy address.
+Cards poll every 5 s while a server is changing state. `/health` decides the mode: in mock mode
+there is no login and the three demo servers appear; in live mode the user logs in through
+Cognito's hosted page (authorization code + PKCE) and the app sends the access token on every
+`/servers/...` call. A 401 renews the token once, then falls back to the login screen. A 503 with
+`Retry-After` (the database waking up) is retried up to 3 times.
+
+Requires Node `^20.19.0 || >=22.12.0`.
+
+~~~bash
+cd frontend
+npm ci
+npm run dev        # http://localhost:3000, proxies API calls to uvicorn on :8000 (mock or live backend)
+npm run dev:live   # same UI, proxies to the deployed API; needs frontend/.env.local
+npm run build      # type-checks, then writes frontend/dist/
+npm test           # Vitest
+~~~
+
+The dev port is fixed at 3000 because Cognito only allows `http://localhost:3000/` and the
+API URL as callback and logout URLs. FastAPI serves `frontend/dist` at `/`, so in production the
+hosted URL is the API URL and there is no CORS. `./run.sh` builds the frontend only if `dist/`
+is missing; after frontend changes run `npm run build` yourself.
+
+Live mode needs the public Cognito settings. Copy `frontend/.env.example` to
+`frontend/.env.local` and fill in values from `terraform output` (the Lambda build does this
+automatically):
+
+| Variable | terraform output |
+|---|---|
+| VITE_COGNITO_AUTHORITY | cognito_issuer |
+| VITE_COGNITO_CLIENT_ID | cognito_client_id |
+| VITE_COGNITO_DOMAIN | cognito_login_url |
+| VITE_SERVER_IDS | admin_server_id (comma-separated) |
 
 ## Configuration
 
@@ -151,10 +189,11 @@ The CLI still works against real AWS: `python backend/ec2.py status|start|stop <
 .venv/bin/python -m pytest -c backend/pytest.ini
 ~~~
 
-92 tests, all offline: external calls are mocked and unexpected AWS or Minecraft calls fail the test.
+94 tests, all offline: external calls are mocked and unexpected AWS or Minecraft calls fail the test.
 Coverage includes every token rejection case, cross-user access (404 with no AWS call), database
 errors and auto-pause, start/stop transitions and conflicts, region handling, and EC2 lifecycle
-behavior against moto.
+behavior against moto. The frontend has Vitest tests for the API client, token renewal and
+retry logic: `cd frontend && npm test`.
 
 ## Deployment
 
@@ -166,7 +205,7 @@ See [infra/README.md](infra/README.md). In short: `cd infra && ./build_lambda.sh
 - No server creation or deletion through the API yet (`POST /servers`, `DELETE /servers/{id}`).
 - `/stop` calls `StopInstances` directly; a graceful world save before stopping is still to do.
 - No operation locks, runtime history, or cost reporting yet.
-- The static frontend has no login yet.
+- The dashboard takes server IDs from `VITE_SERVER_IDS` until `GET /servers` exists.
 
 ## Progress log
 
@@ -175,3 +214,4 @@ See [infra/README.md](infra/README.md). In short: `cd infra && ./build_lambda.sh
 - **Oct 13:** deployed to Lambda + API Gateway; imported all AWS resources into Terraform; added
   Cognito, the users/identities/servers tables, token verification, ownership checks, and
   authenticated start/stop; disabled the unauthenticated legacy routes.
+- **Oct 13:** React dashboard with Cognito login (hosted UI), served by Lambda from `frontend/dist`.
