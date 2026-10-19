@@ -3,7 +3,7 @@ import uuid
 from unittest.mock import Mock
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
-from db import DatabaseUnavailable, OwnedServer, ServerLimitReached, ServerRepository
+from db import DatabaseUnavailable, OwnedServer, ServerLimitReached, ServerRepository, ServerRow
 
 SERVER_ID = "3f2a6c1e-0000-4000-8000-000000000001"
 
@@ -126,3 +126,15 @@ def test_attach_instance_only_fills_empty_rows():
     kwargs = repo.client.execute_statement.call_args.kwargs
     assert "instance_id IS NULL" in kwargs["sql"]
     assert {p["name"] for p in kwargs["parameters"]} == {"server_id", "instance_id", "instance_type"}
+
+def test_list_owned_servers():
+    repo = repository([
+        {"id": SERVER_ID, "region": "us-east-1", "version": "LATEST", "instance_type": "t4g.small", "has_instance": True},
+        {"id": USER_ID, "region": "us-east-1", "version": "LATEST", "has_instance": False}])  # NULL type omitted
+    assert repo.list_owned_servers("owner-sub") == [
+        ServerRow(SERVER_ID, "us-east-1", "LATEST", "t4g.small", True),
+        ServerRow(USER_ID, "us-east-1", "LATEST", None, False)]
+    kwargs = repo.client.execute_statement.call_args.kwargs
+    assert "owner-sub" not in kwargs["sql"]
+    assert "instance_id AS" not in kwargs["sql"]
+    assert kwargs["parameters"] == [{"name": "sub", "value": {"stringValue": "owner-sub"}}]

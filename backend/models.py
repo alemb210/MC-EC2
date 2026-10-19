@@ -25,6 +25,14 @@ class UserResponse(BaseModel):
     user_id: str
     created: bool
 
+class ServerSummary(BaseModel):
+    server_id: str
+    region: str
+    minecraft_version: str | None
+    instance_type: str | None
+    # False while a launch hasn't finished; POST /servers again resumes it.
+    has_instance: bool
+
 class ServerCreated(BaseModel):
     server_id: str
     instance_state: InstanceState

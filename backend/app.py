@@ -8,7 +8,7 @@ from auth import Principal, build_verifier, current_user_dependency
 from config import Settings
 from db import DatabaseUnavailable, build_repository
 from db import ServerLimitReached
-from models import HealthResponse, ServerAction, ServerCreated, ServerStatus, UserResponse
+from models import HealthResponse, ServerAction, ServerCreated, ServerStatus, ServerSummary, UserResponse
 from service import AWSUnavailable, CreationUnavailable, InvalidServerState, StatusService, UnknownServer
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -83,6 +83,12 @@ def create_app(settings: Settings | None = None, verifier=None, repository=None)
         user = run(service.register, principal)
         response.status_code = 201 if user.created else 200
         return user
+
+    @app.get("/servers", response_model=list[ServerSummary],
+             responses={401: SERVER_ERRORS[401], 503: SERVER_ERRORS[503]})
+    def list_servers(principal: Principal = Depends(current_user)):
+        """The caller's servers, oldest first; empty for a new user."""
+        return run(service.list_servers, principal)
 
     @app.post("/servers", response_model=ServerCreated, status_code=201,
               responses={401: SERVER_ERRORS[401], 409: {"description": "Server limit reached"},

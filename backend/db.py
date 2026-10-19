@@ -23,6 +23,14 @@ class OwnedServer:
     instance_id: str | None
     region: str
 
+@dataclass(frozen=True)
+class ServerRow:
+    id: str
+    region: str
+    version: str | None
+    instance_type: str | None
+    has_instance: bool
+
 # Advisory lock key that serializes server creation, so the server limits hold under concurrency.
 CREATE_SERVER_LOCK = 7_320_001
 
@@ -140,6 +148,18 @@ class ServerRepository:
         self.query("UPDATE servers SET instance_id = :instance_id, instance_type = :instance_type "
                    "WHERE id = :server_id AND instance_id IS NULL",
                    server_id=uuid.UUID(server_id), instance_id=instance_id, instance_type=instance_type)
+
+    def list_owned_servers(self, sub: str) -> list[ServerRow]:
+        """The servers the Cognito user sub owns, oldest first."""
+        rows = self.query(
+            "SELECT s.id::text AS id, s.region, s.version, s.instance_type, "
+            "s.instance_id IS NOT NULL AS has_instance "
+            "FROM servers s JOIN identities i ON i.user_id = s.owner_id "
+            "WHERE i.provider = 'cognito' AND i.provider_id = :sub ORDER BY s.created_at",
+            sub=sub)
+        return [ServerRow(id=r["id"], region=r["region"], version=r.get("version"),
+                          instance_type=r.get("instance_type"), has_instance=r["has_instance"])
+                for r in rows]
 
     def get_owned_server(self, sub: str, server_id: str) -> OwnedServer | None:
         """The server, only if the Cognito user sub owns it."""

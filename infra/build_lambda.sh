@@ -31,8 +31,7 @@ tf_out() { terraform -chdir="$INFRA_DIR" output -raw "$1"; }
 VITE_COGNITO_AUTHORITY="$(tf_out cognito_issuer)"
 VITE_COGNITO_CLIENT_ID="$(tf_out cognito_client_id)"
 VITE_COGNITO_DOMAIN="$(tf_out cognito_login_url)"
-VITE_SERVER_IDS="$(tf_out admin_server_id)"
-export VITE_COGNITO_AUTHORITY VITE_COGNITO_CLIENT_ID VITE_COGNITO_DOMAIN VITE_SERVER_IDS
+export VITE_COGNITO_AUTHORITY VITE_COGNITO_CLIENT_ID VITE_COGNITO_DOMAIN
 (cd "$ROOT_DIR/frontend" && npm ci && npm run build)
 
 # Mirror the repo layout so backend/app.py finds ../frontend/dist.

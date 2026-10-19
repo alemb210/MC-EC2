@@ -11,7 +11,7 @@ import app as app_module
 from app import create_app
 from auth import CognitoVerifier
 from config import Settings
-from db import DatabaseUnavailable, OwnedServer, ServerLimitReached
+from db import DatabaseUnavailable, OwnedServer, ServerLimitReached, ServerRow
 
 POOL_ID = "us-east-1_TestPool"
 CLIENT_ID = "test-client-id"
@@ -42,6 +42,13 @@ class FakeRepository:
         if self.error:
             raise self.error
         return self.servers.get((sub, server_id))
+
+    def list_owned_servers(self, sub):
+        self.calls.append(("list", sub))
+        if self.error:
+            raise self.error
+        return [ServerRow(s.id, s.region, "LATEST", "t4g.small", s.instance_id is not None)
+                for (owner, _), s in self.servers.items() if owner == sub]
 
     # Registration and server creation, keyed by sub (user_id is "user-<sub>").
     registered = ()
@@ -198,6 +205,7 @@ def test_mock_unknown_server(method, path):
     ("post", f"/servers/{SERVER_ID}/start"),
     ("post", f"/servers/{SERVER_ID}/stop"),
     ("post", "/me"),
+    ("get", "/servers"),
     ("post", "/servers")])
 def test_rejects_bad_tokens_before_db_or_aws(method, path, headers):
     repository = FakeRepository()
@@ -373,6 +381,37 @@ def test_register_mock_mode():
     response = TestClient(create_app(Settings(mock_mode=True))).post("/me")
     assert response.status_code == 200
     assert response.json()["created"] is False
+
+# --- Listing (GET /servers) ---
+
+def test_list_returns_only_the_callers_servers():
+    repository = FakeRepository({
+        (OWNER_SUB, SERVER_ID): OwnedServer(SERVER_ID, "i-test", "us-east-1"),
+        (OWNER_SUB, NEW_SERVER_ID): OwnedServer(NEW_SERVER_ID, None, "us-east-1"),
+        ("stranger", "other"): OwnedServer("other", "i-other", "us-east-1")})
+    response = real_api(repository).get("/servers", headers=auth())
+    assert response.status_code == 200
+    assert response.json() == [
+        {"server_id": SERVER_ID, "region": "us-east-1", "minecraft_version": "LATEST",
+         "instance_type": "t4g.small", "has_instance": True},
+        {"server_id": NEW_SERVER_ID, "region": "us-east-1", "minecraft_version": "LATEST",
+         "instance_type": "t4g.small", "has_instance": False}]
+    assert "i-test" not in response.text  # EC2 instance IDs are never exposed
+    assert repository.calls == [("list", OWNER_SUB)]
+
+def test_list_empty_for_new_user():
+    response = real_api().get("/servers", headers=auth(token(sub="new-user")))
+    assert (response.status_code, response.json()) == (200, [])
+
+@pytest.mark.parametrize("retry_after,header", [(15, "15"), (None, None)])
+def test_list_database_unavailable(retry_after, header):
+    response = real_api(FakeRepository(error=DatabaseUnavailable(retry_after))).get("/servers", headers=auth())
+    assert response.status_code == 503
+    assert response.headers.get("Retry-After") == header
+
+def test_list_mock_mode():
+    response = TestClient(create_app(Settings(mock_mode=True))).get("/servers")
+    assert [s["server_id"] for s in response.json()] == ["demo-server", "demo-starting", "demo-stopped"]
 
 # --- Server creation (POST /servers) ---
 

@@ -3,7 +3,7 @@ import ec2
 from auth import Principal
 from config import Settings
 from db import DatabaseUnavailable, OwnedServer, ServerLimitReached
-from models import ServerAction, ServerCreated, ServerStatus, UserResponse
+from models import ServerAction, ServerCreated, ServerStatus, ServerSummary, UserResponse
 
 class UnknownServer(Exception):
     pass
@@ -50,6 +50,16 @@ class StatusService:
             raise DatabaseUnavailable
         user_id, created = self.repository.ensure_user(principal.sub)
         return UserResponse(user_id=user_id, created=created)
+
+    def list_servers(self, principal: Principal) -> list[ServerSummary]:
+        if self.settings.mock_mode:
+            return [ServerSummary(server_id=sid, region="us-east-1", minecraft_version=MINECRAFT_VERSION,
+                                  instance_type="t4g.small", has_instance=True) for sid in MOCK_STATUSES]
+        if self.repository is None:
+            raise DatabaseUnavailable
+        return [ServerSummary(server_id=r.id, region=r.region, minecraft_version=r.version,
+                              instance_type=r.instance_type, has_instance=r.has_instance)
+                for r in self.repository.list_owned_servers(principal.sub)]
 
     def create_server(self, principal: Principal) -> ServerCreated:
         if self.settings.mock_mode:

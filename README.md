@@ -12,6 +12,7 @@ The backend runs on AWS Lambda behind API Gateway; all AWS resources are managed
 |---|---|---|---|
 | GET | /health | none | API liveness and `mock_mode`; never contacts AWS |
 | POST | /me | token | Registers the caller in the database: 201 the first time, 200 after |
+| GET | /servers | token | The caller's servers, oldest first (`[]` for a new user); never includes EC2 instance IDs |
 | POST | /servers | token | 201: launches a new server from the Minecraft launch template (registers the caller if needed) |
 | GET | /servers/{server_id}/status | token + owner | EC2 state, Minecraft readiness, current address, player count and version (null until ready) |
 | POST | /servers/{server_id}/start | token + owner | 202, new state (`pending`, or the current state if already running) |
@@ -76,7 +77,8 @@ Restart after configuration changes.
 
 ## Frontend
 
-The dashboard in `frontend/` (React, Vite, TypeScript) shows a card per server with its state,
+The dashboard in `frontend/` (React, Vite, TypeScript) lists the user's servers from `GET /servers`,
+has a Create server button, and shows a card per server with its state,
 Minecraft readiness, address, players and version, plus Start, Stop, Refresh and Copy address.
 Cards poll every 5 s while a server is changing state. `/health` decides the mode: in mock mode
 there is no login and the three demo servers appear; in live mode the user logs in through
@@ -109,7 +111,6 @@ automatically):
 | VITE_COGNITO_AUTHORITY | cognito_issuer |
 | VITE_COGNITO_CLIENT_ID | cognito_client_id |
 | VITE_COGNITO_DOMAIN | cognito_login_url |
-| VITE_SERVER_IDS | admin_server_id (comma-separated) |
 
 ## Configuration
 
@@ -222,7 +223,7 @@ The CLI still works against real AWS: `python backend/ec2.py status|start|stop <
 .venv/bin/python -m pytest -c backend/pytest.ini
 ~~~
 
-133 tests, all offline: external calls are mocked and unexpected AWS or Minecraft calls fail the test.
+148 tests, all offline: external calls are mocked and unexpected AWS or Minecraft calls fail the test.
 Coverage includes every token rejection case, cross-user access (404 with no AWS call), database
 errors and auto-pause, start/stop transitions and conflicts, region handling, registration, server
 limits, launch retries, and EC2 lifecycle and launching against moto. The frontend has Vitest tests for the API client, token renewal and
@@ -236,12 +237,9 @@ See [infra/README.md](infra/README.md). In short: `cd infra && ./build_lambda.sh
 
 - Self-signup is open; `max_servers_total` and the AWS budget are what limit cost. Cognito's default
   email sender allows about 50 confirmation emails a day.
-- The dashboard doesn't call `POST /me` or `POST /servers` yet; new users create servers with curl.
-- `GET /servers` is in progress separately.
-- No server creation or deletion through the API yet (`POST /servers`, `DELETE /servers/{id}`).
+- No server deletion through the API yet (`DELETE /servers/{id}`).
 - `/stop` calls `StopInstances` directly; a graceful world save before stopping is still to do.
 - No operation locks, runtime history, or cost reporting yet.
-- The dashboard takes server IDs from `VITE_SERVER_IDS` until `GET /servers` exists.
 
 ## Progress log
 

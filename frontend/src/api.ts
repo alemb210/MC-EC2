@@ -18,6 +18,15 @@ export interface ServerAction {
   instance_state: InstanceState;
 }
 
+export interface ServerSummary {
+  server_id: string;
+  region: string;
+  minecraft_version: string | null;
+  instance_type: string | null;
+  // False while a launch hasn't finished; creating again resumes it.
+  has_instance: boolean;
+}
+
 // POST /servers launches a new instance; it boots and installs Minecraft over a few minutes.
 export interface ServerCreated {
   server_id: string;
@@ -72,6 +81,7 @@ export const startServer = (id: string, token?: string) =>
   request<ServerAction>("POST", `${server(id)}/start`, token);
 export const stopServer = (id: string, token?: string) =>
   request<ServerAction>("POST", `${server(id)}/stop`, token);
+export const listServers = (token?: string) => request<ServerSummary[]>("GET", "/servers", token);
 export const createServer = (token?: string) => request<ServerCreated>("POST", "/servers", token);
 
 export function statusFromAction(a: ServerAction): ServerStatus {

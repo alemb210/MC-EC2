@@ -1,10 +1,8 @@
 import { useRef, useState } from "react";
 import { AuthProvider, useAuth, type AuthProviderProps } from "react-oidc-context";
 import { config } from "../config";
-import { loadCreatedServers, rememberCreatedServer } from "../createdServers";
 import type { Mode } from "../hooks/useHealth";
 import type { AuthSession } from "../recovery";
-import CreateServer from "./CreateServer";
 import Dashboard from "./Dashboard";
 import Shell from "./Shell";
 
@@ -30,10 +28,6 @@ function Gate({ mode }: { mode: Mode }) {
   const authRef = useRef(auth);
   authRef.current = auth;
   const [expired, setExpired] = useState(false);
-  const sub = auth.user?.profile.sub ?? "";
-  const [created, setCreated] = useState<{ sub: string; ids: string[] }>({ sub: "", ids: [] });
-  // Reload the remembered servers when a different user logs in.
-  const createdIds = created.sub === sub ? created.ids : loadCreatedServers(sub);
   // Several cards can hit a 401 at once; share one renewal between them.
   const renewing = useRef<Promise<string | null> | null>(null);
 
@@ -98,9 +92,8 @@ function Gate({ mode }: { mode: Mode }) {
 
   return (
     <Shell mode={mode} account={account}>
-      <CreateServer session={session}
-        onCreated={(server) => setCreated({ sub, ids: rememberCreatedServer(sub, server.server_id) })} />
-      <Dashboard serverIds={[...new Set([...config.serverIds, ...createdIds])]} session={session} />
+      {/* Keyed by user so a different login starts with a fresh server list. */}
+      <Dashboard key={auth.user.profile.sub} session={session} />
     </Shell>
   );
 }

@@ -1,7 +1,7 @@
 import Dashboard from "./components/Dashboard";
 import LiveApp from "./components/LiveApp";
 import Shell from "./components/Shell";
-import { MOCK_SERVER_IDS, cognitoConfigured } from "./config";
+import { cognitoConfigured } from "./config";
 import { useHealth } from "./hooks/useHealth";
 
 // /health decides the mode, so the UI always matches the backend it is talking to.
@@ -15,7 +15,7 @@ export default function App() {
     return <Shell mode={mode}><p className="error">API offline</p></Shell>;
   }
   if (mode === "mock") {
-    return <Shell mode={mode}><Dashboard serverIds={MOCK_SERVER_IDS} session={null} /></Shell>;
+    return <Shell mode={mode}><Dashboard session={null} /></Shell>;
   }
   if (!cognitoConfigured) {
     return (

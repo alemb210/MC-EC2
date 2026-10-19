@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  ApiError, createServer, describeError, getStatus, startServer, statusFromAction, stopServer,
+  ApiError, createServer, describeError, getStatus, listServers, startServer, statusFromAction, stopServer,
 } from "../api";
 
 function stubFetch(status: number, body: unknown, headers: Record<string, string> = {}) {
@@ -99,5 +99,16 @@ describe("createServer", () => {
     stubFetch(409, { detail: "Server limit reached." });
     const err = await createServer("tok").catch((e) => e);
     expect(describeError(err)).toBe("Server limit reached.");
+  });
+});
+
+describe("listServers", () => {
+  it("GETs /servers with the token", async () => {
+    const servers = [{ server_id: "s1", region: "us-east-1", minecraft_version: "LATEST",
+                       instance_type: "t4g.small", has_instance: true }];
+    const fetchMock = stubFetch(200, servers);
+    await expect(listServers("tok")).resolves.toEqual(servers);
+    expect(fetchMock.mock.calls[0][0]).toBe("/servers");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "GET", headers: { Authorization: "Bearer tok" } });
   });
 });
