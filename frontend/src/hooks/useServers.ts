@@ -1,32 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { describeError, listServers } from "../api";
+import { describeError, listServers, type ServerSummary } from "../api";
 import { withRecovery, type AuthSession } from "../recovery";
 
-// The caller's server IDs from GET /servers; add() shows a newly created one without a reload.
+// Refresh from the database after creation; ignore replies from older requests.
 export function useServers(session: AuthSession | null) {
-  const [ids, setIds] = useState<string[] | null>(null);
+  const [servers, setServers] = useState<ServerSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const sessionRef = useRef(session);
   sessionRef.current = session;
+  const latest = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++latest.current;
     setError(null);
     try {
       const servers = await withRecovery(listServers, sessionRef.current, {
-        onWaking: () => setNotice("Waking up the database…"),
+        onWaking: () => { if (seq === latest.current) setNotice("Waking up the database…"); },
       });
-      setIds(servers.map((s) => s.server_id));
+      if (seq === latest.current) setServers(servers);
     } catch (e) {
-      setError(describeError(e));
+      if (seq === latest.current) setError(describeError(e));
     } finally {
-      setNotice(null);
+      if (seq === latest.current) setNotice(null);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => { latest.current++; };
+  }, [load]);
 
-  const add = useCallback((id: string) => setIds((prev) => [...new Set([...(prev ?? []), id])]), []);
-
-  return { ids, error, notice, reload: load, add };
+  return { servers, error, notice, reload: load };
 }

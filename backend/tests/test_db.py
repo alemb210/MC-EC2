@@ -68,25 +68,51 @@ USER_ID = "3f2a6c1e-0000-4000-8000-0000000000aa"
 def sqls(repo):
     return [c.kwargs["sql"] for c in repo.client.execute_statement.call_args_list]
 
-@pytest.mark.parametrize("created", [True, False])
-def test_ensure_user(created):
-    repo = repository([{"user_id": USER_ID, "created": created}])
-    assert repo.ensure_user("new-sub") == (USER_ID, created)
+def test_ensure_user_preserves_existing_mapping():
+    repo = repository([{"user_id": USER_ID}])
+    assert repo.ensure_user("new-sub") == (USER_ID, False)
     kwargs = repo.client.execute_statement.call_args.kwargs
     assert "new-sub" not in kwargs["sql"]
     assert kwargs["parameters"] == [{"name": "sub", "value": {"stringValue": "new-sub"}}]
 
-def test_ensure_user_lost_race_reads_winner():
-    repo = repository()
-    repo.client.execute_statement.side_effect = [
-        {"formattedRecords": "[]"}, {"formattedRecords": json.dumps([{"user_id": USER_ID}])}]
+def test_ensure_user_rechecks_after_lock_without_inserting_orphan():
+    repo = transactional([], [{"acquired": True}], [{"user_id": USER_ID}])
     assert repo.ensure_user("new-sub") == (USER_ID, False)
+    assert not any(sql.startswith("INSERT") for sql in sqls(repo))
 
 def transactional(*results):
     repo = repository()
     repo.client.begin_transaction.return_value = {"transactionId": "tx-1"}
     repo.client.execute_statement.side_effect = [{"formattedRecords": json.dumps(r)} for r in results]
     return repo
+
+
+def test_first_login_commits_both_rows_and_rolls_back_on_identity_failure():
+    repo = transactional([], [{"acquired": True}], [], [], [])
+    user_id, created = repo.ensure_user("new-sub")
+    assert created and uuid.UUID(user_id)
+    assert sqls(repo)[-2].startswith("INSERT INTO users")
+    assert sqls(repo)[-1].startswith("INSERT INTO identities")
+    repo.client.commit_transaction.assert_called_once()
+    repo.client.rollback_transaction.assert_not_called()
+
+    failing = transactional([], [{"acquired": True}], [], [])
+    replies = failing.client.execute_statement.side_effect
+    failing.client.execute_statement.side_effect = [*replies,
+        ClientError({"Error": {"Code": "DatabaseErrorException"}}, "ExecuteStatement")]
+    with pytest.raises(DatabaseUnavailable):
+        failing.ensure_user("new-sub")
+    failing.client.rollback_transaction.assert_called_once()
+    failing.client.commit_transaction.assert_not_called()
+
+
+def test_busy_first_login_requests_retry_without_inserting_user():
+    repo = transactional([], [{"acquired": False}])
+    with pytest.raises(DatabaseUnavailable) as exc:
+        repo.ensure_user("new-sub")
+    assert exc.value.retry_after == 1
+    assert not any(sql.startswith("INSERT") for sql in sqls(repo))
+    repo.client.rollback_transaction.assert_called_once()
 
 def test_reserve_server_inserts_within_limits():
     repo = transactional([{"locked": 1}], [], [{"mine": 0, "total": 2}], [{"id": SERVER_ID, "region": "us-east-1"}])

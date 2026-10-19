@@ -2,9 +2,10 @@ import { useRef, useState } from "react";
 import { createServer, describeError, type ServerCreated } from "../api";
 import { withRecovery, type AuthSession } from "../recovery";
 
-export default function CreateServer({ session, onCreated }: {
+export default function CreateServer({ session, onCreated, resume = false }: {
   session: AuthSession;
   onCreated: (server: ServerCreated) => void;
+  resume?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -32,7 +33,7 @@ export default function CreateServer({ session, onCreated }: {
 
   return (
     <section className="create">
-      <button onClick={onCreate} disabled={busy}>{busy ? "Creating…" : "Create server"}</button>
+      <button onClick={onCreate} disabled={busy}>{busy ? "Creating…" : resume ? "Resume creation" : "Create server"}</button>
       {notice && <p className="muted">{notice}</p>}
       {error && <p className="error">{error}</p>}
     </section>

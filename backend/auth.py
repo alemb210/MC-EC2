@@ -40,6 +40,8 @@ class CognitoVerifier:
             raise InvalidToken from exc
         if claims["token_use"] != "access" or claims["client_id"] != self.client_id:
             raise InvalidToken
+        if not isinstance(claims["sub"], str) or not claims["sub"].strip():
+            raise InvalidToken
         return Principal(sub=claims["sub"])
 
 def build_verifier(settings: Settings) -> CognitoVerifier | None:

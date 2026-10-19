@@ -9,7 +9,9 @@ class HealthResponse(BaseModel):
 
 class ServerStatus(BaseModel):
     server_id: str
-    instance_state: InstanceState
+    # No EC2 state exists until the launch has been recorded in the database.
+    instance_state: InstanceState | None
+    provisioning_state: Literal["awaiting_instance", "instance_assigned"] = "instance_assigned"
     minecraft_ready: bool
     connection_address: str | None
     # From the Minecraft status ping; null unless minecraft_ready.
@@ -20,10 +22,6 @@ class ServerStatus(BaseModel):
 class ServerAction(BaseModel):
     server_id: str
     instance_state: InstanceState
-
-class UserResponse(BaseModel):
-    user_id: str
-    created: bool
 
 class ServerSummary(BaseModel):
     server_id: str

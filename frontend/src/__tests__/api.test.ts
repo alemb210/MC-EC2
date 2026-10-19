@@ -80,6 +80,7 @@ describe("start and stop", () => {
   it("statusFromAction clears readiness, address and players", () => {
     expect(statusFromAction({ server_id: "s1", instance_state: "stopping" })).toEqual({
       server_id: "s1", instance_state: "stopping", minecraft_ready: false,
+      provisioning_state: "instance_assigned",
       connection_address: null, players_online: null, players_max: null, minecraft_version: null,
     });
   });

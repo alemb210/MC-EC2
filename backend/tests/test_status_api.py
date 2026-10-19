@@ -118,7 +118,7 @@ def test_docs_and_scope():
     with TestClient(create_app(Settings(mock_mode=True))) as api:
         assert api.get("/docs").status_code == 200
         assert set(api.get("/openapi.json").json()["paths"]) == {
-            "/health", "/me", "/servers", "/servers/{server_id}/status",
+            "/health", "/servers", "/servers/{server_id}/status",
             "/servers/{server_id}/start", "/servers/{server_id}/stop"}
 
 def test_environment_configuration(monkeypatch):
@@ -173,6 +173,7 @@ def test_mock_status(server, state, ready, address, players):
     api = TestClient(create_app(Settings(mock_mode=True)))
     assert api.get(f"/servers/{server}/status").json() == {
         "server_id": server, "instance_state": state, "minecraft_ready": ready,
+        "provisioning_state": "instance_assigned",
         "connection_address": address, **players}
 
 @pytest.mark.parametrize("action,server,expected", [
@@ -199,12 +200,13 @@ def test_mock_unknown_server(method, path):
     auth(token(client_id="other-client")),
     auth(token(token_use="id")),                                # ID token instead of access token
     auth(token(client_id=None)),                                # required claim missing
+    auth(token(sub="")),
+    auth(token(sub=" ")),
 ])
 @pytest.mark.parametrize("method,path", [
     ("get", f"/servers/{SERVER_ID}/status"),
     ("post", f"/servers/{SERVER_ID}/start"),
     ("post", f"/servers/{SERVER_ID}/stop"),
-    ("post", "/me"),
     ("get", "/servers"),
     ("post", "/servers")])
 def test_rejects_bad_tokens_before_db_or_aws(method, path, headers):
@@ -235,6 +237,25 @@ def test_server_without_instance_conflicts():
     repository = FakeRepository({(OWNER_SUB, SERVER_ID): OwnedServer(SERVER_ID, None, "us-east-1")})
     assert real_api(repository).post(f"/servers/{SERVER_ID}/start", headers=auth()).status_code == 409
 
+
+def test_unfinished_launch_status_is_visible_only_to_owner_and_recovers(monkeypatch):
+    repository = FakeRepository({(OWNER_SUB, SERVER_ID): OwnedServer(SERVER_ID, None, "us-east-1")})
+    api = real_api(repository)
+    response = api.get(f"/servers/{SERVER_ID}/status", headers=auth())
+    assert response.status_code == 200
+    assert response.json() == {
+        "server_id": SERVER_ID, "provisioning_state": "awaiting_instance", "instance_state": None,
+        "minecraft_ready": False, "connection_address": None, **NO_PLAYERS,
+    }
+    # No AWS call is possible under the autouse network guard above.
+    assert api.get(f"/servers/{SERVER_ID}/status", headers=auth(token(sub="stranger"))).status_code == 404
+    assert api.post(f"/servers/{SERVER_ID}/stop", headers=auth()).status_code == 409
+
+    repository.servers[(OWNER_SUB, SERVER_ID)] = OwnedServer(SERVER_ID, "i-test", "us-east-1")
+    aws_instance(monkeypatch, state="stopped", ip=None)
+    assigned = api.get(f"/servers/{SERVER_ID}/status", headers=auth()).json()
+    assert (assigned["provisioning_state"], assigned["instance_state"]) == ("instance_assigned", "stopped")
+
 @pytest.mark.parametrize("retry_after,header", [(15, "15"), (None, None)])
 def test_database_unavailable(retry_after, header):
     repository = FakeRepository(error=DatabaseUnavailable(retry_after=retry_after))
@@ -259,6 +280,7 @@ def test_running_minecraft_not_ready(monkeypatch, failure):
     response = real_api().get(f"/servers/{SERVER_ID}/status", headers=auth())
     assert response.status_code == 200
     assert response.json() == {"server_id": SERVER_ID, "instance_state": "running",
+                               "provisioning_state": "instance_assigned",
                                "minecraft_ready": False, "connection_address": "203.0.113.10:25565",
                                **NO_PLAYERS}
     client.describe_instances.assert_called_once_with(InstanceIds=["i-test"])
@@ -360,27 +382,15 @@ def test_client_region_and_bounded_timeouts(monkeypatch):
     assert kwargs["config"].retries == {"total_max_attempts": 1}
     assert "aws_access_key_id" not in kwargs
 
-# --- Registration (POST /me) ---
+# --- Registration through listing ---
 
 def test_register_creates_then_returns_user():
     repository = FakeRepository()
     api = real_api(repository)
-    first = api.post("/me", headers=auth())
-    assert (first.status_code, first.json()) == (201, {"user_id": f"user-{OWNER_SUB}", "created": True})
-    second = api.post("/me", headers=auth())
-    assert (second.status_code, second.json()) == (200, {"user_id": f"user-{OWNER_SUB}", "created": False})
-    assert repository.calls == [("ensure_user", OWNER_SUB)] * 2
-
-@pytest.mark.parametrize("retry_after,header", [(15, "15"), (None, None)])
-def test_register_database_unavailable(retry_after, header):
-    response = real_api(FakeRepository(error=DatabaseUnavailable(retry_after))).post("/me", headers=auth())
-    assert response.status_code == 503
-    assert response.headers.get("Retry-After") == header
-
-def test_register_mock_mode():
-    response = TestClient(create_app(Settings(mock_mode=True))).post("/me")
-    assert response.status_code == 200
-    assert response.json()["created"] is False
+    assert api.get("/servers", headers=auth()).status_code == 200
+    assert api.get("/servers", headers=auth()).status_code == 200
+    assert repository.registered == (OWNER_SUB, OWNER_SUB)
+    assert repository.calls == [("ensure_user", OWNER_SUB), ("list", OWNER_SUB)] * 2
 
 # --- Listing (GET /servers) ---
 
@@ -397,7 +407,7 @@ def test_list_returns_only_the_callers_servers():
         {"server_id": NEW_SERVER_ID, "region": "us-east-1", "minecraft_version": "LATEST",
          "instance_type": "t4g.small", "has_instance": False}]
     assert "i-test" not in response.text  # EC2 instance IDs are never exposed
-    assert repository.calls == [("list", OWNER_SUB)]
+    assert repository.calls == [("ensure_user", OWNER_SUB), ("list", OWNER_SUB)]
 
 def test_list_empty_for_new_user():
     response = real_api().get("/servers", headers=auth(token(sub="new-user")))

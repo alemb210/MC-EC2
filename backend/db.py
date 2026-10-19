@@ -81,6 +81,8 @@ class ServerRepository:
         tx = self._call("begin_transaction", **self.target)["transactionId"]
         try:
             yield tx
+            self._call("commit_transaction", resourceArn=self.target["resourceArn"],
+                       secretArn=self.target["secretArn"], transactionId=tx)
         except BaseException:
             try:
                 self._call("rollback_transaction", resourceArn=self.target["resourceArn"],
@@ -88,34 +90,34 @@ class ServerRepository:
             except DatabaseUnavailable:
                 pass  # The Data API rolls back abandoned transactions after a timeout.
             raise
-        self._call("commit_transaction", resourceArn=self.target["resourceArn"],
-                   secretArn=self.target["secretArn"], transactionId=tx)
+
+    def _find_user(self, sub: str, transaction_id: str | None = None) -> str | None:
+        rows = self.query("SELECT user_id::text AS user_id FROM identities "
+                          "WHERE provider = 'cognito' AND provider_id = :sub",
+                          sub=sub, transaction_id=transaction_id)
+        return rows[0]["user_id"] if rows else None
 
     def ensure_user(self, sub: str) -> tuple[str, bool]:
         """The user ID for a Cognito sub, creating the users and identities rows on first call.
 
         Returns (user_id, created)."""
-        rows = self.query(
-            "WITH existing AS ("
-            "  SELECT user_id FROM identities WHERE provider = 'cognito' AND provider_id = :sub"
-            "), new_user AS ("
-            "  INSERT INTO users (name) SELECT NULL WHERE NOT EXISTS (SELECT 1 FROM existing) RETURNING id"
-            "), new_identity AS ("
-            "  INSERT INTO identities (user_id, provider, provider_id) SELECT id, 'cognito', :sub FROM new_user"
-            "  ON CONFLICT (provider, provider_id) DO NOTHING RETURNING user_id"
-            ") "
-            "SELECT user_id::text AS user_id, false AS created FROM existing "
-            "UNION ALL SELECT user_id::text, true FROM new_identity",
-            sub=sub)
-        if rows:
-            return rows[0]["user_id"], rows[0]["created"]
-        # A concurrent first login won the identity insert; its row is visible now. The losing
-        # users row has no identity or servers and is harmless.
-        rows = self.query("SELECT user_id::text AS user_id FROM identities "
-                          "WHERE provider = 'cognito' AND provider_id = :sub", sub=sub)
-        if not rows:
-            raise DatabaseUnavailable
-        return rows[0]["user_id"], False
+        existing = self._find_user(sub)
+        if existing:
+            return existing, False
+        with self.transaction() as tx:
+            # Serialize first logins for this subject without waiting inside Lambda.
+            lock = self.query("SELECT pg_try_advisory_xact_lock(hashtextextended(:sub, 0)) AS acquired",
+                              sub=sub, transaction_id=tx)
+            if not lock[0]["acquired"]:
+                raise DatabaseUnavailable(retry_after=1)
+            existing = self._find_user(sub, tx)
+            if existing:
+                return existing, False
+            user_id = uuid.uuid4()
+            self.query("INSERT INTO users (id) VALUES (:user_id)", user_id=user_id, transaction_id=tx)
+            self.query("INSERT INTO identities (user_id, provider, provider_id) "
+                       "VALUES (:user_id, 'cognito', :sub)", user_id=user_id, sub=sub, transaction_id=tx)
+        return str(user_id), True
 
     def reserve_server(self, user_id: str, region: str, version: str,
                        max_per_user: int, max_total: int) -> OwnedServer:

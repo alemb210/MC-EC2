@@ -3,7 +3,7 @@ import ec2
 from auth import Principal
 from config import Settings
 from db import DatabaseUnavailable, OwnedServer, ServerLimitReached
-from models import ServerAction, ServerCreated, ServerStatus, ServerSummary, UserResponse
+from models import ServerAction, ServerCreated, ServerStatus, ServerSummary
 
 class UnknownServer(Exception):
     pass
@@ -32,24 +32,20 @@ class StatusService:
         self.settings = settings
         self.repository = repository
 
-    def _owned_instance(self, principal: Principal, server_id: str) -> OwnedServer:
+    def _owned_server(self, principal: Principal, server_id: str) -> OwnedServer:
         # Ownership is checked before any EC2 call; servers the caller doesn't own look unknown.
         if self.repository is None:
             raise DatabaseUnavailable
         server = self.repository.get_owned_server(principal.sub, server_id)
         if server is None:
             raise UnknownServer(server_id)
+        return server
+
+    def _owned_instance(self, principal: Principal, server_id: str) -> OwnedServer:
+        server = self._owned_server(principal, server_id)
         if server.instance_id is None:
             raise InvalidServerState("server has no EC2 instance yet")
         return server
-
-    def register(self, principal: Principal) -> UserResponse:
-        if self.settings.mock_mode:
-            return UserResponse(user_id="00000000-0000-4000-8000-000000000000", created=False)
-        if self.repository is None:
-            raise DatabaseUnavailable
-        user_id, created = self.repository.ensure_user(principal.sub)
-        return UserResponse(user_id=user_id, created=created)
 
     def list_servers(self, principal: Principal) -> list[ServerSummary]:
         if self.settings.mock_mode:
@@ -57,6 +53,7 @@ class StatusService:
                                   instance_type="t4g.small", has_instance=True) for sid in MOCK_STATUSES]
         if self.repository is None:
             raise DatabaseUnavailable
+        self.repository.ensure_user(principal.sub)
         return [ServerSummary(server_id=r.id, region=r.region, minecraft_version=r.version,
                               instance_type=r.instance_type, has_instance=r.has_instance)
                 for r in self.repository.list_owned_servers(principal.sub)]
@@ -89,7 +86,11 @@ class StatusService:
             state, ready, address = MOCK_STATUSES[server_id]
             minecraft = MOCK_MINECRAFT.get(server_id)
         else:
-            server = self._owned_instance(principal, server_id)
+            server = self._owned_server(principal, server_id)
+            if server.instance_id is None:
+                return ServerStatus(server_id=server_id, instance_state=None,
+                                    provisioning_state="awaiting_instance",
+                                    minecraft_ready=False, connection_address=None)
             try:
                 info = ec2.status(server.instance_id, region=server.region)
             except (ClientError, BotoCoreError) as exc:

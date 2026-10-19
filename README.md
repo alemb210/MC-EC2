@@ -11,8 +11,7 @@ The backend runs on AWS Lambda behind API Gateway; all AWS resources are managed
 | Method | Path | Auth | Response |
 |---|---|---|---|
 | GET | /health | none | API liveness and `mock_mode`; never contacts AWS |
-| POST | /me | token | Registers the caller in the database: 201 the first time, 200 after |
-| GET | /servers | token | The caller's servers, oldest first (`[]` for a new user); never includes EC2 instance IDs |
+| GET | /servers | token | Registers the caller if needed, then lists their servers, oldest first (`[]` for a new user); never includes EC2 instance IDs |
 | POST | /servers | token | 201: launches a new server from the Minecraft launch template (registers the caller if needed) |
 | GET | /servers/{server_id}/status | token + owner | EC2 state, Minecraft readiness, current address, player count and version (null until ready) |
 | POST | /servers/{server_id}/start | token + owner | 202, new state (`pending`, or the current state if already running) |
@@ -158,7 +157,7 @@ aws cognito-idp confirm-sign-up --client-id "$CLIENT" --username '<email>' --con
 With `$API` and `$TOKEN` set as below:
 
 ~~~bash
-curl -X POST -H "Authorization: Bearer $TOKEN" "$API/me"
+curl -H "Authorization: Bearer $TOKEN" "$API/servers"         # registers the caller if needed
 curl -X POST -H "Authorization: Bearer $TOKEN" "$API/servers"   # returns server_id; the instance boots running
 ~~~
 
@@ -167,6 +166,13 @@ The new instance installs Docker and Minecraft on first boot, so it takes a few 
 most `max_servers_total` servers exist in total (default 3, including the admin's); both are
 Terraform variables. If a launch fails, retrying `POST /servers` resumes the same server rather
 than creating another.
+
+If a server row exists but its EC2 instance has not been recorded, `/status` returns 200
+with `provisioning_state: "awaiting_instance"` and `instance_state: null`. This is separate
+from EC2's `pending` state. The dashboard labels it **Awaiting instance** and offers
+**Resume creation**, which retries `POST /servers` for the unfinished row. Status polling
+only observes progress; it does not resume a launch automatically. Start/stop still return
+409 until an instance is attached. Assigned servers return `provisioning_state: "instance_assigned"`.
 
 Start, check, and stop a server:
 
@@ -223,7 +229,7 @@ The CLI still works against real AWS: `python backend/ec2.py status|start|stop <
 .venv/bin/python -m pytest -c backend/pytest.ini
 ~~~
 
-148 tests, all offline: external calls are mocked and unexpected AWS or Minecraft calls fail the test.
+Tests run offline: external calls are mocked and unexpected AWS or Minecraft calls fail the test.
 Coverage includes every token rejection case, cross-user access (404 with no AWS call), database
 errors and auto-pause, start/stop transitions and conflicts, region handling, registration, server
 limits, launch retries, and EC2 lifecycle and launching against moto. The frontend has Vitest tests for the API client, token renewal and

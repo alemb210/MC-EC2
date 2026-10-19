@@ -73,7 +73,7 @@ gateway, and no direct `psql` access. Inspect data with the RDS Query Editor in 
 
 - Sign-in by email (case-insensitive); passwords need 12+ characters with upper, lower and a digit.
 - Self-signup is on (`allow_admin_create_user_only = false`). New users are added to the database
-  by `POST /me` or `POST /servers`; `max_servers_per_user` and `max_servers_total` (variables.tf)
+  by `GET /servers` or `POST /servers`; `max_servers_per_user` and `max_servers_total` (variables.tf)
   cap what they can launch.
 - The web client has no secret and uses authorization code + PKCE. `ALLOW_USER_PASSWORD_AUTH` is
   enabled so tokens can be fetched from the CLI for testing.

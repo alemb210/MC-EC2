@@ -2,14 +2,20 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiError, type InstanceState, type ServerStatus } from "../api";
 import { isSettling } from "../hooks/useServerStatus";
 import { withRecovery, type AuthSession } from "../recovery";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import * as statusHook from "../hooks/useServerStatus";
+import ServerCard from "../components/ServerCard";
 
-const status = (instance_state: InstanceState, minecraft_ready = false): ServerStatus => ({
+const status = (instance_state: InstanceState | null, minecraft_ready = false): ServerStatus => ({
   server_id: "s1", instance_state, minecraft_ready, connection_address: null,
+  provisioning_state: instance_state === null ? "awaiting_instance" : "instance_assigned",
   players_online: null, players_max: null, minecraft_version: null,
 });
 
 describe("isSettling", () => {
   it.each([
+    [null, false, true],
     ["pending", false, true],
     ["stopping", false, true],
     ["running", false, true],
@@ -20,6 +26,22 @@ describe("isSettling", () => {
   ] as const)("%s (ready=%s) -> %s", (state, ready, expected) => {
     expect(isSettling(status(state, ready))).toBe(expected);
   });
+});
+
+it("explains an unfinished launch and disables lifecycle actions", () => {
+  const spy = vi.spyOn(statusHook, "useServerStatus").mockReturnValue({
+    status: status(null), error: null, notice: null, busy: false,
+    refresh: vi.fn(), start: vi.fn(), stop: vi.fn(),
+  });
+  try {
+    const html = renderToStaticMarkup(createElement(ServerCard, { serverId: "s1", session: null }));
+    expect(html).toContain("Awaiting instance");
+    expect(html).toContain("Use Resume creation");
+    expect(html).toContain('<button disabled="">Start</button>');
+    expect(html).toContain('<button disabled="">Stop</button>');
+  } finally {
+    spy.mockRestore();
+  }
 });
 
 describe("withRecovery", () => {

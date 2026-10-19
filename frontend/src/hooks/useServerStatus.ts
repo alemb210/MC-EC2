@@ -8,7 +8,8 @@ const POLL_MS = 5000;
 
 // Keep polling while AWS or Minecraft is still transitioning.
 export function isSettling(s: ServerStatus): boolean {
-  return s.instance_state === "pending" || s.instance_state === "stopping" ||
+  return s.provisioning_state === "awaiting_instance" ||
+    s.instance_state === "pending" || s.instance_state === "stopping" ||
     (s.instance_state === "running" && !s.minecraft_ready);
 }
 
@@ -17,6 +18,8 @@ export function useServerStatus(serverId: string, session: AuthSession | null) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Even a failed poll must schedule the next check while a transition is pending.
+  const [completedRequests, setCompletedRequests] = useState(0);
   // A slow poll must not overwrite the newer state returned by start/stop.
   const latest = useRef(0);
   // The session object is rebuilt every render; keep the newest one without re-running effects.
@@ -36,7 +39,10 @@ export function useServerStatus(serverId: string, session: AuthSession | null) {
     } catch (e) {
       if (seq === latest.current) setError(describeError(e));
     } finally {
-      if (seq === latest.current) setNotice(null);
+      if (seq === latest.current) {
+        setNotice(null);
+        setCompletedRequests((n) => n + 1);
+      }
     }
   }, []);
 
@@ -49,13 +55,16 @@ export function useServerStatus(serverId: string, session: AuthSession | null) {
     setBusy(false);
   }, [run, serverId]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    void refresh();
+    return () => { latest.current++; };
+  }, [refresh]);
 
   useEffect(() => {
-    if (!status || !isSettling(status)) return;
+    if (busy || !status || !isSettling(status)) return;
     const timer = setTimeout(refresh, POLL_MS);
     return () => clearTimeout(timer);
-  }, [status, refresh]);
+  }, [status, refresh, busy, completedRequests]);
 
   return { status, error, notice, busy, refresh, start: () => act("start"), stop: () => act("stop") };
 }

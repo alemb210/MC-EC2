@@ -4,7 +4,8 @@ export type InstanceState =
 
 export interface ServerStatus {
   server_id: string;
-  instance_state: InstanceState;
+  instance_state: InstanceState | null;
+  provisioning_state: "awaiting_instance" | "instance_assigned";
   minecraft_ready: boolean;
   connection_address: string | null;
   players_online: number | null;
@@ -88,6 +89,7 @@ export function statusFromAction(a: ServerAction): ServerStatus {
   return {
     server_id: a.server_id,
     instance_state: a.instance_state,
+    provisioning_state: "instance_assigned",
     minecraft_ready: false,
     connection_address: null,
     players_online: null,

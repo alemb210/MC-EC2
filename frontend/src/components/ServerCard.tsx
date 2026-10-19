@@ -20,6 +20,7 @@ export default function ServerCard({ serverId, session }: { serverId: string; se
   }, [copied]);
 
   const state = status?.instance_state;
+  const awaitingInstance = status?.provisioning_state === "awaiting_instance";
   const address = status?.connection_address ?? null;
 
   const onStop = () => {
@@ -43,7 +44,7 @@ export default function ServerCard({ serverId, session }: { serverId: string; se
     <article className="card">
       <header className="card-head">
         <h2><code>{serverId}</code></h2>
-        <span className={`state ${state ?? ""}`}>{state ?? "loading…"}</span>
+        <span className={`state ${state ?? ""}`}>{awaitingInstance ? "Awaiting instance" : state ?? "loading…"}</span>
       </header>
 
       {status && (
@@ -68,6 +69,7 @@ export default function ServerCard({ serverId, session }: { serverId: string; se
         <button className="secondary" onClick={refresh} disabled={busy}>Refresh</button>
       </div>
 
+      {awaitingInstance && <p className="muted">Creation has not finished. Use Resume creation to retry the existing server.</p>}
       {notice && <p className="muted">{notice}</p>}
       {(error || copyError) && <p className="error">{error ?? copyError}</p>}
     </article>

@@ -19,7 +19,7 @@ resource "aws_cognito_user_pool" "main" {
     temporary_password_validity_days = 7
   }
 
-  # Self-signup is on: the hosted login page shows "Sign up". POST /me and POST /servers register
+  # Self-signup is on: the hosted login page shows "Sign up". GET /servers and POST /servers register
   # new users in the database; MAX_SERVERS_* in lambda.tf caps what they can launch.
   admin_create_user_config {
     allow_admin_create_user_only = false
