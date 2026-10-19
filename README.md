@@ -3,7 +3,7 @@
 One-Click Minecraft Server Hosting on AWS EC2.
 Team: Alif (frontend/UI), Alem (Docker/AWS), Ryan (backend/integration).
 
-A logged-in user can start, check, and stop their Minecraft server through an authenticated API.
+Anyone can sign up, launch a Minecraft server, and start, check, and stop it through an authenticated API.
 The backend runs on AWS Lambda behind API Gateway; all AWS resources are managed with Terraform in [`infra/`](infra/README.md).
 
 ## Implemented
@@ -11,6 +11,8 @@ The backend runs on AWS Lambda behind API Gateway; all AWS resources are managed
 | Method | Path | Auth | Response |
 |---|---|---|---|
 | GET | /health | none | API liveness and `mock_mode`; never contacts AWS |
+| POST | /me | token | Registers the caller in the database: 201 the first time, 200 after |
+| POST | /servers | token | 201: launches a new server from the Minecraft launch template (registers the caller if needed) |
 | GET | /servers/{server_id}/status | token + owner | EC2 state, Minecraft readiness, current address, player count and version (null until ready) |
 | POST | /servers/{server_id}/start | token + owner | 202, new state (`pending`, or the current state if already running) |
 | POST | /servers/{server_id}/stop | token + owner | 202, new state (`stopping`, or the current state if already stopped) |
@@ -31,6 +33,13 @@ Client ──Bearer token──► API Gateway ──► Lambda (FastAPI via Man
    1. auth.py     verify the token with Cognito's public keys          → 401 if missing/invalid
    2. db.py       Data API query: does this user (sub) own server_id?  → 404 if not
    3. ec2.py      start / stop / describe the instance                 → 409 wrong state, 502 AWS error
+
+POST /servers:
+   1. auth.py     verify the token
+   2. db.py       find or create the user; in one transaction, reuse their unlaunched server
+                  or insert a row if the limits allow                   → 409 limit reached
+   3. ec2.py      find the instance tagged ServerId=<id>, or RunInstances from the template
+   4. db.py       save the instance ID on the row
 ```
 
 | File | Role |
@@ -136,6 +145,30 @@ No token is needed in mock mode. Start/stop return the state the server would mo
 
 ### Live API
 
+Sign up (or use the hosted login page's "Sign up" link), confirm with the emailed code, then
+register and launch a server:
+
+~~~bash
+CLIENT=$(cd infra && terraform output -raw cognito_client_id)
+aws cognito-idp sign-up --client-id "$CLIENT" --username '<email>' --password '<password>'
+aws cognito-idp confirm-sign-up --client-id "$CLIENT" --username '<email>' --confirmation-code '<code>'
+~~~
+
+With `$API` and `$TOKEN` set as below:
+
+~~~bash
+curl -X POST -H "Authorization: Bearer $TOKEN" "$API/me"
+curl -X POST -H "Authorization: Bearer $TOKEN" "$API/servers"   # returns server_id; the instance boots running
+~~~
+
+The new instance installs Docker and Minecraft on first boot, so it takes a few minutes before
+`minecraft_ready` is true. Each user can create `max_servers_per_user` servers (default 1), and at
+most `max_servers_total` servers exist in total (default 3, including the admin's); both are
+Terraform variables. If a launch fails, retrying `POST /servers` resumes the same server rather
+than creating another.
+
+Start, check, and stop a server:
+
 ~~~bash
 API=https://k19j61rb5c.execute-api.us-east-1.amazonaws.com
 SERVER=$(cd infra && terraform output -raw admin_server_id)   # or ask Alem
@@ -168,9 +201,9 @@ A running server costs money; stop it when finished. Example ready response:
 |---|---|
 | 401 | Missing, malformed, or expired token; wrong issuer or app client; an ID token instead of an access token |
 | 404 | Unknown server ID, or a server the caller doesn't own (deliberately indistinguishable) |
-| 409 | Start while stopping, stop while starting, or a server row with no instance yet |
+| 409 | Start while stopping, stop while starting, a server row with no instance yet, or `POST /servers` over the server limit |
 | 502 | EC2 call failed; AWS error details are never returned |
-| 503 | Database resuming from auto-pause (`Retry-After: 15`), or Cognito/database not configured |
+| 503 | Database resuming from auto-pause (`Retry-After: 15`), or Cognito, database, or launch template not configured |
 
 Ownership is checked before any EC2 call, so an unauthorized request makes no AWS change.
 EC2 state and the public IP are read from AWS on every status call; the IP changes after each
@@ -189,10 +222,10 @@ The CLI still works against real AWS: `python backend/ec2.py status|start|stop <
 .venv/bin/python -m pytest -c backend/pytest.ini
 ~~~
 
-94 tests, all offline: external calls are mocked and unexpected AWS or Minecraft calls fail the test.
+133 tests, all offline: external calls are mocked and unexpected AWS or Minecraft calls fail the test.
 Coverage includes every token rejection case, cross-user access (404 with no AWS call), database
-errors and auto-pause, start/stop transitions and conflicts, region handling, and EC2 lifecycle
-behavior against moto. The frontend has Vitest tests for the API client, token renewal and
+errors and auto-pause, start/stop transitions and conflicts, region handling, registration, server
+limits, launch retries, and EC2 lifecycle and launching against moto. The frontend has Vitest tests for the API client, token renewal and
 retry logic: `cd frontend && npm test`.
 
 ## Deployment
@@ -201,7 +234,10 @@ See [infra/README.md](infra/README.md). In short: `cd infra && ./build_lambda.sh
 
 ## Limitations and next steps
 
-- Self-signup is off; there is one admin account. Next: register users on first login, `GET /servers`.
+- Self-signup is open; `max_servers_total` and the AWS budget are what limit cost. Cognito's default
+  email sender allows about 50 confirmation emails a day.
+- The dashboard doesn't call `POST /me` or `POST /servers` yet; new users create servers with curl.
+- `GET /servers` is in progress separately.
 - No server creation or deletion through the API yet (`POST /servers`, `DELETE /servers/{id}`).
 - `/stop` calls `StopInstances` directly; a graceful world save before stopping is still to do.
 - No operation locks, runtime history, or cost reporting yet.

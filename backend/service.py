@@ -2,8 +2,8 @@ from botocore.exceptions import BotoCoreError, ClientError
 import ec2
 from auth import Principal
 from config import Settings
-from db import DatabaseUnavailable, OwnedServer
-from models import ServerAction, ServerStatus
+from db import DatabaseUnavailable, OwnedServer, ServerLimitReached
+from models import ServerAction, ServerCreated, ServerStatus, UserResponse
 
 class UnknownServer(Exception):
     pass
@@ -13,6 +13,12 @@ class AWSUnavailable(Exception):
 
 class InvalidServerState(Exception):
     pass
+
+class CreationUnavailable(Exception):
+    """Server creation is not configured (no launch template)."""
+
+# Matches VERSION in infra/minecraft/user_data.sh, which every launched instance runs.
+MINECRAFT_VERSION = "LATEST"
 
 MOCK_STATUSES = {
     "demo-server": ("running", True, "203.0.113.10:25565"),
@@ -36,6 +42,35 @@ class StatusService:
         if server.instance_id is None:
             raise InvalidServerState("server has no EC2 instance yet")
         return server
+
+    def register(self, principal: Principal) -> UserResponse:
+        if self.settings.mock_mode:
+            return UserResponse(user_id="00000000-0000-4000-8000-000000000000", created=False)
+        if self.repository is None:
+            raise DatabaseUnavailable
+        user_id, created = self.repository.ensure_user(principal.sub)
+        return UserResponse(user_id=user_id, created=created)
+
+    def create_server(self, principal: Principal) -> ServerCreated:
+        if self.settings.mock_mode:
+            raise ServerLimitReached  # The mock user already has its demo servers.
+        if self.settings.launch_template_id is None:
+            raise CreationUnavailable
+        if self.repository is None:
+            raise DatabaseUnavailable
+        user_id, _ = self.repository.ensure_user(principal.sub)
+        # The row is saved before the launch and reused on retry, so a failed or interrupted
+        # launch never leaves an untracked instance or uses up the caller's limit.
+        server = self.repository.reserve_server(
+            user_id, self.settings.aws_region, MINECRAFT_VERSION,
+            self.settings.max_servers_per_user, self.settings.max_servers_total)
+        try:
+            launched = ec2.launch(server.id, self.settings.launch_template_id, region=server.region)
+        except (ClientError, BotoCoreError) as exc:
+            raise AWSUnavailable from exc
+        self.repository.attach_instance(server.id, launched["instance_id"], launched["instance_type"])
+        return ServerCreated(server_id=server.id, instance_state=launched["state"], region=server.region,
+                             minecraft_version=MINECRAFT_VERSION, instance_type=launched["instance_type"])
 
     def status(self, server_id: str, principal: Principal) -> ServerStatus:
         if self.settings.mock_mode:

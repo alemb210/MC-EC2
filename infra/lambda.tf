@@ -28,6 +28,9 @@ resource "aws_lambda_function" "api" {
       DB_CLUSTER_ARN       = aws_rds_cluster.db.arn
       DB_SECRET_ARN        = aws_rds_cluster.db.master_user_secret[0].secret_arn
       DB_NAME              = aws_rds_cluster.db.database_name
+      LAUNCH_TEMPLATE_ID   = aws_launch_template.minecraft.id
+      MAX_SERVERS_PER_USER = var.max_servers_per_user
+      MAX_SERVERS_TOTAL    = var.max_servers_total
     }
   }
 

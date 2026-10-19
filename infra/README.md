@@ -10,7 +10,7 @@ Change infrastructure here, not in the console.
 | `database.tf` | Aurora Serverless v2 (PostgreSQL 17), 0–2 ACU, auto-pause after 5 minutes, RDS Data API enabled |
 | `database_schema.tf`, `db/` | Table migrations and the admin seed, applied through the Data API |
 | `cognito.tf` | User pool, web app client, login domain, admin user |
-| `iam.tf` | `mc-ec2-api` Lambda role: logs, EC2 describe, start/stop only for `Project = mc-ec2`, Data API |
+| `iam.tf` | `mc-ec2-api` Lambda role: logs, EC2 describe, start/stop only for `Project = mc-ec2`, launching from the `mc-ec2` template with that tag, Data API |
 | `lambda.tf` | `mc-ec2-api` Lambda function and log group |
 | `api.tf` | `mc-ec2` HTTP API: all routes go to the Lambda; throttling; CORS |
 | `budget.tf` | Monthly cost budget and alert emails |
@@ -72,7 +72,9 @@ gateway, and no direct `psql` access. Inspect data with the RDS Query Editor in 
 ## Cognito
 
 - Sign-in by email (case-insensitive); passwords need 12+ characters with upper, lower and a digit.
-- Self-signup is off (`allow_admin_create_user_only = true`) until the API registers users.
+- Self-signup is on (`allow_admin_create_user_only = false`). New users are added to the database
+  by `POST /me` or `POST /servers`; `max_servers_per_user` and `max_servers_total` (variables.tf)
+  cap what they can launch.
 - The web client has no secret and uses authorization code + PKCE. `ALLOW_USER_PASSWORD_AUTH` is
   enabled so tokens can be fetched from the CLI for testing.
 - The admin user gets a temporary password by email. Set a permanent one outside Terraform, so it

@@ -11,6 +11,11 @@ class Settings(BaseModel):
     db_cluster_arn: str | None = None
     db_secret_arn: str | None = None
     db_name: str = "mcec2"
+    # Launch template for new servers; server creation returns 503 without it.
+    launch_template_id: str | None = None
+    # Caps on POST /servers. Self-signup is open, so these bound what strangers can launch.
+    max_servers_per_user: int = Field(default=1, ge=0)
+    max_servers_total: int = Field(default=3, ge=0)
 
     @classmethod
     def from_env(cls):
@@ -25,4 +30,7 @@ class Settings(BaseModel):
                    cognito_client_id=os.environ.get("COGNITO_CLIENT_ID") or None,
                    db_cluster_arn=os.environ.get("DB_CLUSTER_ARN") or None,
                    db_secret_arn=os.environ.get("DB_SECRET_ARN") or None,
-                   db_name=os.environ.get("DB_NAME") or "mcec2")
+                   db_name=os.environ.get("DB_NAME") or "mcec2",
+                   launch_template_id=os.environ.get("LAUNCH_TEMPLATE_ID") or None,
+                   max_servers_per_user=int(os.environ.get("MAX_SERVERS_PER_USER") or 1),
+                   max_servers_total=int(os.environ.get("MAX_SERVERS_TOTAL") or 3))

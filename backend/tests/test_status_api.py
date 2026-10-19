@@ -11,13 +11,15 @@ import app as app_module
 from app import create_app
 from auth import CognitoVerifier
 from config import Settings
-from db import DatabaseUnavailable, OwnedServer
+from db import DatabaseUnavailable, OwnedServer, ServerLimitReached
 
 POOL_ID = "us-east-1_TestPool"
 CLIENT_ID = "test-client-id"
 ISSUER = f"https://cognito-idp.us-east-1.amazonaws.com/{POOL_ID}"
 OWNER_SUB = "owner-sub"
 SERVER_ID = "3f2a6c1e-0000-4000-8000-000000000001"
+NEW_SERVER_ID = "3f2a6c1e-0000-4000-8000-000000000002"
+TEMPLATE_ID = "lt-0123456789abcdef0"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 OTHER_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
@@ -41,6 +43,33 @@ class FakeRepository:
             raise self.error
         return self.servers.get((sub, server_id))
 
+    # Registration and server creation, keyed by sub (user_id is "user-<sub>").
+    registered = ()
+    pending = None
+    limit_reached = False
+    attach_error = None
+
+    def ensure_user(self, sub):
+        self.calls.append(("ensure_user", sub))
+        if self.error:
+            raise self.error
+        created = sub not in self.registered
+        self.registered = (*self.registered, sub)
+        return f"user-{sub}", created
+
+    def reserve_server(self, user_id, region, version, max_per_user, max_total):
+        self.calls.append(("reserve_server", user_id, region, version, max_per_user, max_total))
+        if self.limit_reached:
+            raise ServerLimitReached
+        self.pending = self.pending or OwnedServer(NEW_SERVER_ID, None, region)
+        return self.pending
+
+    def attach_instance(self, server_id, instance_id, instance_type):
+        self.calls.append(("attach_instance", server_id, instance_id, instance_type))
+        if self.attach_error:
+            raise self.attach_error
+        self.pending = None
+
 def verifier():
     v = CognitoVerifier("us-east-1", POOL_ID, CLIENT_ID)
     v.jwks = SimpleNamespace(get_signing_key_from_jwt=lambda token: SimpleNamespace(key=KEY.public_key()))
@@ -56,9 +85,10 @@ def token(sub=OWNER_SUB, key=KEY, **overrides):
 def auth(tok=None):
     return {"Authorization": f"Bearer {tok or token()}"}
 
-def real_api(repository=None):
+def real_api(repository=None, **overrides):
     settings = Settings(cognito_user_pool_id=POOL_ID, cognito_client_id=CLIENT_ID,
-                        db_cluster_arn="arn:cluster", db_secret_arn="arn:secret")
+                        db_cluster_arn="arn:cluster", db_secret_arn="arn:secret",
+                        **{"launch_template_id": TEMPLATE_ID, **overrides})
     return TestClient(create_app(settings, verifier=verifier(), repository=repository or FakeRepository()))
 
 def aws_instance(monkeypatch, state="running", ip="203.0.113.10"):
@@ -81,7 +111,7 @@ def test_docs_and_scope():
     with TestClient(create_app(Settings(mock_mode=True))) as api:
         assert api.get("/docs").status_code == 200
         assert set(api.get("/openapi.json").json()["paths"]) == {
-            "/health", "/servers/{server_id}/status",
+            "/health", "/me", "/servers", "/servers/{server_id}/status",
             "/servers/{server_id}/start", "/servers/{server_id}/stop"}
 
 def test_environment_configuration(monkeypatch):
@@ -92,7 +122,11 @@ def test_environment_configuration(monkeypatch):
     monkeypatch.setenv("DB_CLUSTER_ARN", "arn:cluster")
     monkeypatch.setenv("DB_SECRET_ARN", "arn:secret")
     monkeypatch.delenv("DB_NAME", raising=False)
+    monkeypatch.setenv("LAUNCH_TEMPLATE_ID", TEMPLATE_ID)
+    monkeypatch.setenv("MAX_SERVERS_TOTAL", "5")
+    monkeypatch.delenv("MAX_SERVERS_PER_USER", raising=False)
     settings = Settings.from_env()
+    assert (settings.launch_template_id, settings.max_servers_per_user, settings.max_servers_total) == (TEMPLATE_ID, 1, 5)
     assert (settings.aws_region, settings.mock_mode) == ("us-west-2", False)
     assert (settings.cognito_user_pool_id, settings.cognito_client_id) == (POOL_ID, CLIENT_ID)
     assert (settings.db_cluster_arn, settings.db_secret_arn, settings.db_name) == ("arn:cluster", "arn:secret", "mcec2")
@@ -162,7 +196,9 @@ def test_mock_unknown_server(method, path):
 @pytest.mark.parametrize("method,path", [
     ("get", f"/servers/{SERVER_ID}/status"),
     ("post", f"/servers/{SERVER_ID}/start"),
-    ("post", f"/servers/{SERVER_ID}/stop")])
+    ("post", f"/servers/{SERVER_ID}/stop"),
+    ("post", "/me"),
+    ("post", "/servers")])
 def test_rejects_bad_tokens_before_db_or_aws(method, path, headers):
     repository = FakeRepository()
     response = getattr(real_api(repository), method)(path, headers=headers)
@@ -315,3 +351,108 @@ def test_client_region_and_bounded_timeouts(monkeypatch):
     assert kwargs["config"].read_timeout == 5
     assert kwargs["config"].retries == {"total_max_attempts": 1}
     assert "aws_access_key_id" not in kwargs
+
+# --- Registration (POST /me) ---
+
+def test_register_creates_then_returns_user():
+    repository = FakeRepository()
+    api = real_api(repository)
+    first = api.post("/me", headers=auth())
+    assert (first.status_code, first.json()) == (201, {"user_id": f"user-{OWNER_SUB}", "created": True})
+    second = api.post("/me", headers=auth())
+    assert (second.status_code, second.json()) == (200, {"user_id": f"user-{OWNER_SUB}", "created": False})
+    assert repository.calls == [("ensure_user", OWNER_SUB)] * 2
+
+@pytest.mark.parametrize("retry_after,header", [(15, "15"), (None, None)])
+def test_register_database_unavailable(retry_after, header):
+    response = real_api(FakeRepository(error=DatabaseUnavailable(retry_after))).post("/me", headers=auth())
+    assert response.status_code == 503
+    assert response.headers.get("Retry-After") == header
+
+def test_register_mock_mode():
+    response = TestClient(create_app(Settings(mock_mode=True))).post("/me")
+    assert response.status_code == 200
+    assert response.json()["created"] is False
+
+# --- Server creation (POST /servers) ---
+
+def launch_client(monkeypatch, existing=None):
+    client = Mock()
+    client.describe_instances.return_value = {"Reservations": [{"Instances": existing}] if existing else []}
+    client.run_instances.return_value = {"Instances": [
+        {"InstanceId": "i-new", "State": {"Name": "pending"}, "InstanceType": "t4g.small"}]}
+    monkeypatch.setattr(ec2, "ec2", client)
+    return client
+
+def test_create_server_launches_from_template(monkeypatch):
+    client = launch_client(monkeypatch)
+    repository = FakeRepository()
+    response = real_api(repository).post("/servers", headers=auth())
+    assert response.status_code == 201
+    assert response.json() == {"server_id": NEW_SERVER_ID, "instance_state": "pending", "region": "us-east-1",
+                               "minecraft_version": "LATEST", "instance_type": "t4g.small"}
+    kwargs = client.run_instances.call_args.kwargs
+    assert kwargs["LaunchTemplate"] == {"LaunchTemplateId": TEMPLATE_ID, "Version": "$Default"}
+    assert (kwargs["MinCount"], kwargs["MaxCount"], kwargs["ClientToken"]) == (1, 1, NEW_SERVER_ID)
+    for spec in kwargs["TagSpecifications"]:
+        tags = {t["Key"]: t["Value"] for t in spec["Tags"]}
+        assert (tags["Project"], tags["ServerId"]) == ("mc-ec2", NEW_SERVER_ID)
+    assert {s["ResourceType"] for s in kwargs["TagSpecifications"]} == {"instance", "volume"}
+    assert repository.calls == [
+        ("ensure_user", OWNER_SUB),
+        ("reserve_server", f"user-{OWNER_SUB}", "us-east-1", "LATEST", 1, 3),
+        ("attach_instance", NEW_SERVER_ID, "i-new", "t4g.small")]
+
+def test_create_server_passes_configured_limits(monkeypatch):
+    launch_client(monkeypatch)
+    repository = FakeRepository()
+    real_api(repository, max_servers_per_user=2, max_servers_total=10).post("/servers", headers=auth())
+    assert repository.calls[1][-2:] == (2, 10)
+
+def test_create_server_limit_reached_never_launches(monkeypatch):
+    client = launch_client(monkeypatch)
+    repository = FakeRepository()
+    repository.limit_reached = True
+    response = real_api(repository).post("/servers", headers=auth())
+    assert response.status_code == 409
+    client.run_instances.assert_not_called()
+    client.describe_instances.assert_not_called()
+
+def test_create_server_not_configured_touches_nothing():
+    repository = FakeRepository()
+    response = real_api(repository, launch_template_id=None).post("/servers", headers=auth())
+    assert response.status_code == 503
+    assert repository.calls == []
+
+def test_create_server_mock_mode():
+    assert TestClient(create_app(Settings(mock_mode=True))).post("/servers").status_code == 409
+
+def test_failed_launch_is_retried_on_the_same_server(monkeypatch):
+    client = launch_client(monkeypatch)
+    client.run_instances.side_effect = [
+        ClientError({"Error": {"Code": "InsufficientInstanceCapacity", "Message": "private detail"}}, "RunInstances"),
+        client.run_instances.return_value]
+    repository = FakeRepository()
+    api = real_api(repository)
+    failed = api.post("/servers", headers=auth())
+    assert failed.status_code == 502
+    assert "private detail" not in failed.text
+    assert api.post("/servers", headers=auth()).json()["server_id"] == NEW_SERVER_ID
+    assert [c.kwargs["ClientToken"] for c in client.run_instances.call_args_list] == [NEW_SERVER_ID] * 2
+
+def test_launched_but_unrecorded_instance_is_reattached(monkeypatch):
+    # The instance launched but saving its ID failed; the retry finds it by tag instead of launching again.
+    client = launch_client(monkeypatch)
+    repository = FakeRepository()
+    repository.attach_error = DatabaseUnavailable(retry_after=15)
+    api = real_api(repository)
+    assert api.post("/servers", headers=auth()).status_code == 503
+    repository.attach_error = None
+    client.describe_instances.return_value = {"Reservations": [{"Instances": [
+        {"InstanceId": "i-new", "State": {"Name": "running"}, "InstanceType": "t4g.small"}]}]}
+    response = api.post("/servers", headers=auth())
+    assert (response.status_code, response.json()["instance_state"]) == (201, "running")
+    client.run_instances.assert_called_once()
+    assert repository.calls[-1] == ("attach_instance", NEW_SERVER_ID, "i-new", "t4g.small")
+    filters = client.describe_instances.call_args.kwargs["Filters"]
+    assert {"Name": "tag:ServerId", "Values": [NEW_SERVER_ID]} in filters

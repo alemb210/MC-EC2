@@ -88,3 +88,20 @@ def test_cli_lifecycle(instance_id, capsys, monkeypatch, action, expected):
     monkeypatch.setattr(sys, "argv", ["ec2.py", action, instance_id])
     runpy.run_path(ec2.__file__, run_name="__main__")
     assert expected in capsys.readouterr().out
+
+
+def test_launch_from_template_against_moto(monkeypatch):
+    with mock_aws():
+        client = boto3.client("ec2", region_name="us-east-1")
+        monkeypatch.setattr(ec2, "ec2", client)
+        template = client.create_launch_template(
+            LaunchTemplateName="mc-ec2", LaunchTemplateData={"ImageId": "ami-12c6146b", "InstanceType": "t4g.small"})
+        template_id = template["LaunchTemplate"]["LaunchTemplateId"]
+        server_id = "3f2a6c1e-0000-4000-8000-000000000002"
+        first = ec2.launch(server_id, template_id)
+        assert first["instance_type"] == "t4g.small"
+        # Launching the same server again returns the existing instance.
+        assert ec2.launch(server_id, template_id)["instance_id"] == first["instance_id"]
+        inst = client.describe_instances(InstanceIds=[first["instance_id"]])["Reservations"][0]["Instances"][0]
+        assert {"Key": "Project", "Value": "mc-ec2"} in inst["Tags"]
+        assert len(client.describe_instances()["Reservations"]) == 1

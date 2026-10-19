@@ -15,3 +15,15 @@ variable "admin_name" {
   type        = string
   default     = "Admin"
 }
+
+variable "max_servers_per_user" {
+  description = "Servers each user can create through POST /servers"
+  type        = number
+  default     = 1
+}
+
+variable "max_servers_total" {
+  description = "Servers that can exist in total (including the admin's); bounds cost with open signup"
+  type        = number
+  default     = 3
+}

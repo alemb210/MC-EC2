@@ -20,3 +20,14 @@ class ServerStatus(BaseModel):
 class ServerAction(BaseModel):
     server_id: str
     instance_state: InstanceState
+
+class UserResponse(BaseModel):
+    user_id: str
+    created: bool
+
+class ServerCreated(BaseModel):
+    server_id: str
+    instance_state: InstanceState
+    region: str
+    minecraft_version: str
+    instance_type: str | None

@@ -1,6 +1,11 @@
-# Execution role for the FastAPI Lambda: logs, EC2 start/stop limited by tag, Data API access.
+# Execution role for the FastAPI Lambda: logs, EC2 start/stop limited by tag, launching from the
+# Minecraft launch template, Data API access.
 
 data "aws_caller_identity" "current" {}
+
+locals {
+  ec2_arn = "arn:aws:ec2:us-east-1:${data.aws_caller_identity.current.account_id}"
+}
 
 resource "aws_iam_role" "api" {
   name        = "mc-ec2-api"
@@ -38,6 +43,55 @@ resource "aws_iam_role_policy" "api" {
         Action    = ["ec2:StartInstances", "ec2:StopInstances"]
         Resource  = "arn:aws:ec2:us-east-1:${data.aws_caller_identity.current.account_id}:instance/*"
         Condition = { StringEquals = { "aws:ResourceTag/Project" = "mc-ec2" } }
+      },
+      # POST /servers: RunInstances only from the mc-ec2 launch template, and only with Project=mc-ec2,
+      # so launched instances are exactly the ones StartStopTaggedInstances covers.
+      {
+        Sid      = "LaunchTaggedInstanceFromTemplate"
+        Effect   = "Allow"
+        Action   = "ec2:RunInstances"
+        Resource = "${local.ec2_arn}:instance/*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestTag/Project" = "mc-ec2"
+            "ec2:LaunchTemplate"     = aws_launch_template.minecraft.arn
+          }
+        }
+      },
+      {
+        Sid       = "LaunchTaggedVolume"
+        Effect    = "Allow"
+        Action    = "ec2:RunInstances"
+        Resource  = "${local.ec2_arn}:volume/*"
+        Condition = { StringEquals = { "aws:RequestTag/Project" = "mc-ec2" } }
+      },
+      {
+        Sid    = "LaunchTemplateResources"
+        Effect = "Allow"
+        Action = "ec2:RunInstances"
+        Resource = [
+          aws_launch_template.minecraft.arn,
+          "${local.ec2_arn}:subnet/${aws_launch_template.minecraft.network_interfaces[0].subnet_id}",
+          aws_security_group.minecraft.arn,
+          "${local.ec2_arn}:network-interface/*",
+          "${local.ec2_arn}:key-pair/${aws_launch_template.minecraft.key_name}",
+          "arn:aws:ec2:us-east-1::image/${aws_launch_template.minecraft.image_id}",
+          "arn:aws:ec2:us-east-1::snapshot/*",
+        ]
+      },
+      {
+        Sid       = "TagAtLaunch"
+        Effect    = "Allow"
+        Action    = "ec2:CreateTags"
+        Resource  = ["${local.ec2_arn}:instance/*", "${local.ec2_arn}:volume/*"]
+        Condition = { StringEquals = { "ec2:CreateAction" = "RunInstances" } }
+      },
+      {
+        Sid       = "PassMinecraftRole"
+        Effect    = "Allow"
+        Action    = "iam:PassRole"
+        Resource  = aws_iam_role.minecraft.arn
+        Condition = { StringEquals = { "iam:PassedToService" = "ec2.amazonaws.com" } }
       },
       {
         Sid    = "DataApi"

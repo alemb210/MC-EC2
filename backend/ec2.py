@@ -65,6 +65,29 @@ def stop(instance_id, region=None):
     resp = get_client(region).stop_instances(InstanceIds=[instance_id])
     return resp["StoppingInstances"][0]["CurrentState"]["Name"]
 
+#Launch the instance for a server from the launch template, or return the one already launched for it.
+#Instances carry Project=mc-ec2 (required by the start/stop and launch IAM policies) and ServerId.
+def launch(server_id, launch_template_id, region=None):
+    client = get_client(region)
+    existing = client.describe_instances(Filters=[
+        {"Name": "tag:ServerId", "Values": [server_id]},
+        {"Name": "instance-state-name", "Values": ["pending", "running", "stopping", "stopped"]}])
+    for reservation in existing["Reservations"]:
+        for inst in reservation["Instances"]:
+            return {"instance_id": inst["InstanceId"], "state": inst["State"]["Name"],
+                    "instance_type": inst.get("InstanceType")}
+    tags = [{"Key": "Project", "Value": "mc-ec2"}, {"Key": "ServerId", "Value": server_id},
+            {"Key": "Name", "Value": f"mc-ec2-{server_id[:8]}"}]
+    resp = client.run_instances(
+        LaunchTemplate={"LaunchTemplateId": launch_template_id, "Version": "$Default"},
+        MinCount=1, MaxCount=1,
+        ClientToken=server_id,  # a retried request can't launch a second instance
+        TagSpecifications=[{"ResourceType": "instance", "Tags": tags},
+                           {"ResourceType": "volume", "Tags": tags}])
+    inst = resp["Instances"][0]
+    return {"instance_id": inst["InstanceId"], "state": inst["State"]["Name"],
+            "instance_type": inst.get("InstanceType")}
+
 #Poll AWS until instance returns stopped.
 def wait_until_stopped(instance_id):
     get_client().get_waiter("instance_stopped").wait(InstanceIds=[instance_id])
