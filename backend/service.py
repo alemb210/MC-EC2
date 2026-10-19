@@ -3,7 +3,7 @@ import ec2
 from auth import Principal
 from config import Settings
 from db import DatabaseUnavailable, OwnedServer, ServerLimitReached
-from models import ServerAction, ServerCreated, ServerStatus, ServerSummary
+from models import ServerAction, ServerCreated, ServerStatus, ServerSummary, UserResponse
 
 class UnknownServer(Exception):
     pass
@@ -46,6 +46,14 @@ class StatusService:
         if server.instance_id is None:
             raise InvalidServerState("server has no EC2 instance yet")
         return server
+
+    def register(self, principal: Principal) -> UserResponse:
+        if self.settings.mock_mode:
+            return UserResponse(user_id="00000000-0000-4000-8000-000000000000", created=False)
+        if self.repository is None:
+            raise DatabaseUnavailable
+        user_id, created = self.repository.ensure_user(principal.sub)
+        return UserResponse(user_id=user_id, created=created)
 
     def list_servers(self, principal: Principal) -> list[ServerSummary]:
         if self.settings.mock_mode:

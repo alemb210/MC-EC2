@@ -23,6 +23,10 @@ class ServerAction(BaseModel):
     server_id: str
     instance_state: InstanceState
 
+class UserResponse(BaseModel):
+    user_id: str
+    created: bool
+
 class ServerSummary(BaseModel):
     server_id: str
     region: str

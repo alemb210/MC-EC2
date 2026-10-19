@@ -118,7 +118,7 @@ def test_docs_and_scope():
     with TestClient(create_app(Settings(mock_mode=True))) as api:
         assert api.get("/docs").status_code == 200
         assert set(api.get("/openapi.json").json()["paths"]) == {
-            "/health", "/servers", "/servers/{server_id}/status",
+            "/health", "/me", "/servers", "/servers/{server_id}/status",
             "/servers/{server_id}/start", "/servers/{server_id}/stop"}
 
 def test_environment_configuration(monkeypatch):
@@ -204,6 +204,7 @@ def test_mock_unknown_server(method, path):
     auth(token(sub=" ")),
 ])
 @pytest.mark.parametrize("method,path", [
+    ("post", "/me"),
     ("get", f"/servers/{SERVER_ID}/status"),
     ("post", f"/servers/{SERVER_ID}/start"),
     ("post", f"/servers/{SERVER_ID}/stop"),
@@ -382,15 +383,38 @@ def test_client_region_and_bounded_timeouts(monkeypatch):
     assert kwargs["config"].retries == {"total_max_attempts": 1}
     assert "aws_access_key_id" not in kwargs
 
-# --- Registration through listing ---
+# --- Registration (POST /me) and through listing ---
 
-def test_register_creates_then_returns_user():
+def test_listing_registers_user():
     repository = FakeRepository()
     api = real_api(repository)
     assert api.get("/servers", headers=auth()).status_code == 200
     assert api.get("/servers", headers=auth()).status_code == 200
     assert repository.registered == (OWNER_SUB, OWNER_SUB)
     assert repository.calls == [("ensure_user", OWNER_SUB), ("list", OWNER_SUB)] * 2
+
+
+def test_register_creates_then_returns_user():
+    repository = FakeRepository()
+    api = real_api(repository)
+    first = api.post("/me", headers=auth())
+    assert (first.status_code, first.json()) == (201, {"user_id": f"user-{OWNER_SUB}", "created": True})
+    second = api.post("/me", headers=auth())
+    assert (second.status_code, second.json()) == (200, {"user_id": f"user-{OWNER_SUB}", "created": False})
+    assert repository.calls == [("ensure_user", OWNER_SUB)] * 2
+
+
+@pytest.mark.parametrize("retry_after,header", [(15, "15"), (None, None)])
+def test_register_database_unavailable(retry_after, header):
+    response = real_api(FakeRepository(error=DatabaseUnavailable(retry_after))).post("/me", headers=auth())
+    assert response.status_code == 503
+    assert response.headers.get("Retry-After") == header
+
+
+def test_register_mock_mode():
+    response = TestClient(create_app(Settings(mock_mode=True))).post("/me")
+    assert response.status_code == 200
+    assert response.json()["created"] is False
 
 # --- Listing (GET /servers) ---
 

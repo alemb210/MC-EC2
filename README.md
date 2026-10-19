@@ -11,6 +11,7 @@ The backend runs on AWS Lambda behind API Gateway; all AWS resources are managed
 | Method | Path | Auth | Response |
 |---|---|---|---|
 | GET | /health | none | API liveness and `mock_mode`; never contacts AWS |
+| POST | /me | token | Registers the caller: 201 for a new application user, 200 for an existing user |
 | GET | /servers | token | Registers the caller if needed, then lists their servers, oldest first (`[]` for a new user); never includes EC2 instance IDs |
 | POST | /servers | token | 201: launches a new server from the Minecraft launch template (registers the caller if needed) |
 | GET | /servers/{server_id}/status | token + owner | EC2 state, Minecraft readiness, current address, player count and version (null until ready) |
@@ -157,7 +158,8 @@ aws cognito-idp confirm-sign-up --client-id "$CLIENT" --username '<email>' --con
 With `$API` and `$TOKEN` set as below:
 
 ~~~bash
-curl -H "Authorization: Bearer $TOKEN" "$API/servers"         # registers the caller if needed
+curl -X POST -H "Authorization: Bearer $TOKEN" "$API/me"    # explicit application registration
+curl -H "Authorization: Bearer $TOKEN" "$API/servers"        # also registers the caller if needed
 curl -X POST -H "Authorization: Bearer $TOKEN" "$API/servers"   # returns server_id; the instance boots running
 ~~~
 

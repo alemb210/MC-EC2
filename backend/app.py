@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -8,7 +8,7 @@ from auth import Principal, build_verifier, current_user_dependency
 from config import Settings
 from db import DatabaseUnavailable, build_repository
 from db import ServerLimitReached
-from models import HealthResponse, ServerAction, ServerCreated, ServerStatus, ServerSummary
+from models import HealthResponse, ServerAction, ServerCreated, ServerStatus, ServerSummary, UserResponse
 from service import AWSUnavailable, CreationUnavailable, InvalidServerState, StatusService, UnknownServer
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -75,6 +75,14 @@ def create_app(settings: Settings | None = None, verifier=None, repository=None)
             raise HTTPException(503, "Database unavailable. Try again shortly.", headers=headers) from None
         except AWSUnavailable:
             raise HTTPException(502, "Unable to reach EC2. Check AWS credentials, region, permissions, and connectivity.") from None
+
+    @app.post("/me", response_model=UserResponse,
+              responses={201: {"description": "User registered"}, 401: SERVER_ERRORS[401], 503: SERVER_ERRORS[503]})
+    def register(response: Response, principal: Principal = Depends(current_user)):
+        """Registers the caller on first call; later calls return the same user."""
+        user = run(service.register, principal)
+        response.status_code = 201 if user.created else 200
+        return user
 
     @app.get("/servers", response_model=list[ServerSummary],
              responses={401: SERVER_ERRORS[401], 503: SERVER_ERRORS[503]})
