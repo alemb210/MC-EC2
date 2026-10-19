@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, type InstanceState, type ServerStatus } from "../api";
 import { parseServerIds } from "../config";
+import { loadCreatedServers, rememberCreatedServer } from "../createdServers";
 import { isSettling } from "../hooks/useServerStatus";
 import { withRecovery, type AuthSession } from "../recovery";
 
@@ -83,5 +84,34 @@ describe("withRecovery", () => {
     const call = vi.fn().mockRejectedValue(err(409));
     await expect(withRecovery(call, session("new"))).rejects.toThrow();
     expect(call).toHaveBeenCalledOnce();
+  });
+});
+
+describe("created servers", () => {
+  const store = () => {
+    const data = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => data.get(k) ?? null,
+      setItem: (k: string, v: string) => { data.set(k, v); },
+    });
+    return data;
+  };
+
+  it("remembers IDs per user without duplicates", () => {
+    store();
+    rememberCreatedServer("alice", "s1");
+    expect(rememberCreatedServer("alice", "s1")).toEqual(["s1"]);
+    expect(rememberCreatedServer("alice", "s2")).toEqual(["s1", "s2"]);
+    expect(loadCreatedServers("bob")).toEqual([]);
+    vi.unstubAllGlobals();
+  });
+
+  it("ignores corrupt or unavailable storage", () => {
+    store().set("mc-ec2:created-servers:alice", "{not json");
+    expect(loadCreatedServers("alice")).toEqual([]);
+    vi.stubGlobal("localStorage", { getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); } });
+    expect(loadCreatedServers("alice")).toEqual([]);
+    expect(rememberCreatedServer("alice", "s1")).toEqual(["s1"]);
+    vi.unstubAllGlobals();
   });
 });

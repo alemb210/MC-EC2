@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  ApiError, describeError, getStatus, startServer, statusFromAction, stopServer,
+  ApiError, createServer, describeError, getStatus, startServer, statusFromAction, stopServer,
 } from "../api";
 
 function stubFetch(status: number, body: unknown, headers: Record<string, string> = {}) {
@@ -82,5 +82,22 @@ describe("start and stop", () => {
       server_id: "s1", instance_state: "stopping", minecraft_ready: false,
       connection_address: null, players_online: null, players_max: null, minecraft_version: null,
     });
+  });
+});
+
+describe("createServer", () => {
+  it("POSTs /servers with the token and returns the new server", async () => {
+    const created = { server_id: "s2", instance_state: "pending", region: "us-east-1",
+                      minecraft_version: "LATEST", instance_type: "t4g.small" };
+    const fetchMock = stubFetch(201, created);
+    await expect(createServer("tok")).resolves.toEqual(created);
+    expect(fetchMock.mock.calls[0][0]).toBe("/servers");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST", headers: { Authorization: "Bearer tok" } });
+  });
+
+  it("surfaces the server limit as the backend detail", async () => {
+    stubFetch(409, { detail: "Server limit reached." });
+    const err = await createServer("tok").catch((e) => e);
+    expect(describeError(err)).toBe("Server limit reached.");
   });
 });

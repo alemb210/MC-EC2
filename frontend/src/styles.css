@@ -21,6 +21,9 @@ h1 { font-size: 22px; margin: 0; }
 .badge.offline { color: var(--red); }
 .badge.loading { color: var(--muted); }
 
+.create { margin-bottom: 20px; }
+.create p { margin: 10px 0 0; }
+
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
 .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 14px; }
