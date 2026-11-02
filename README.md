@@ -3,7 +3,8 @@
 One-Click Minecraft Server Hosting on AWS EC2.
 Team: Alif (frontend/UI), Alem (Docker/AWS), Ryan (backend/integration).
 
-Anyone can sign up, launch a Minecraft server, and start, check, and stop it through an authenticated API.
+Anyone can sign up, launch a named Minecraft server, choose who can join, share control with other users,
+and start, check, stop, and delete it through an authenticated API. Idle servers stop themselves.
 The backend runs on AWS Lambda behind API Gateway; all AWS resources are managed with Terraform in [`infra/`](infra/README.md).
 
 ## Implemented
@@ -12,16 +13,22 @@ The backend runs on AWS Lambda behind API Gateway; all AWS resources are managed
 |---|---|---|---|
 | GET | /health | none | API liveness and `mock_mode`; never contacts AWS |
 | POST | /me | token | Registers the caller: 201 for a new application user, 200 for an existing user |
-| GET | /servers | token | Registers the caller if needed, then lists their servers, oldest first (`[]` for a new user); never includes EC2 instance IDs |
-| POST | /servers | token | 201: launches a new server from the Minecraft launch template (registers the caller if needed) |
-| GET | /servers/{server_id}/status | token + owner | EC2 state, Minecraft readiness, current address, player count and version (null until ready) |
-| POST | /servers/{server_id}/start | token + owner | 202, new state (`pending`, or the current state if already running) |
-| POST | /servers/{server_id}/stop | token + owner | 202, new state (`stopping`, or the current state if already stopped) |
+| GET | /servers | token | Registers the caller if needed, then lists servers they own or administer, oldest first (`[]` for a new user), with `name` and `role`; never includes EC2 instance IDs |
+| POST | /servers | token | 201: launches a new server from the Minecraft launch template (registers the caller if needed). Optional body: `{name, access}` |
+| PATCH | /servers/{server_id} | token + owner or admin | Renames the server |
+| DELETE | /servers/{server_id} | token + owner | 204: terminates the instance and deletes the server and its world; safe to retry |
+| GET | /servers/{server_id}/status | token + owner or admin | EC2 state, Minecraft readiness, current address, player count and version (null until ready), `auto_stop_at` |
+| POST | /servers/{server_id}/start | token + owner or admin | 202, new state (`pending`, or the current state if already running) |
+| POST | /servers/{server_id}/stop | token + owner or admin | 202, new state (`stopping`, or the current state if already stopped) |
+| GET, PUT | /servers/{server_id}/access | token + owner or admin | Public or whitelist, and the player names; editable while stopped |
+| GET, POST | /servers/{server_id}/admins | token + owner | Lists admins, or adds a site user by email (immediately) |
+| DELETE | /servers/{server_id}/admins/{user_id} | token + owner, or `me` for an admin leaving | 204: removes an admin |
 | GET | /docs | none | Swagger UI |
 | GET | / | none | React dashboard (`frontend/dist`); a "not built" page if the frontend hasn't been built |
 
 `server_id` is the UUID of a row in the `servers` table. Server routes require a Cognito
-**access token** (`Authorization: Bearer <token>`) and only act on servers the caller owns.
+**access token** (`Authorization: Bearer <token>`) and only act on servers the caller owns or
+administers. Admins can do everything an owner can except delete the server and manage admins.
 
 The legacy `/api/servers/{instance_id}` routes are commented out in `backend/app.py`: they took raw
 EC2 instance IDs and bypassed authentication and ownership. The React dashboard uses the
@@ -48,15 +55,27 @@ POST /servers:
 | `backend/app.py` | Routes, auth dependency, error mapping, serves `frontend/dist` |
 | `backend/auth.py` | Cognito access-token verification (signature, issuer, expiry, `token_use`, `client_id`) |
 | `backend/db.py` | Aurora access through the RDS Data API; ownership lookup |
-| `backend/service.py` | Business rules: ownership before any EC2 call; mock data |
+| `backend/service.py` | Business rules: access checks before any EC2 call; mock data |
 | `backend/ec2.py` | Boto3 + mcstatus wrappers; also a small CLI |
+| `backend/jobs.py` | Auto-stop job, run every 5 minutes; deliberately has no database access |
+| `backend/player_access.py` | Access settings in Parameter Store; Mojang name check |
+| `backend/cognito.py` | Finds a site user by email, for adding admins |
 | `backend/config.py` | Settings from environment variables |
 | `backend/models.py` | Pydantic response models |
 | `frontend/` | React + Vite dashboard with Cognito login |
 | `infra/` | Terraform, Lambda packaging, database migrations ([infra/README.md](infra/README.md)) |
 
-Database tables (proposal §IV-F): `users`, `identities` (Cognito `sub` → user), and `servers`
-(owner → EC2 instance). See `infra/db/migrations/`.
+Database tables (proposal §IV-F): `users`, `identities` (Cognito `sub` → user), `servers`
+(owner → EC2 instance), and `server_admins`. See `infra/db/migrations/`.
+
+**Auto-stop:** the job stops servers with no players for `auto_stop_idle_minutes` (default 30; 0 turns it
+off). A failed Minecraft ping counts as idle, so a crashed server stops costing money too. Idle time is
+kept in an `IdleSince` EC2 tag because querying the database every 5 minutes would keep Aurora from auto-pausing.
+
+**Player access:** settings live in a Parameter Store parameter per server, so a booting server can read
+them without database access. The `mc-sync-access` script (in `infra/minecraft/user_data.sh`) applies them
+on every boot, and the API triggers it through a fixed SSM document when a running server's settings change.
+The API sends no names or commands to the instance. A server with no saved settings is public.
 
 ## Run locally
 
@@ -99,8 +118,7 @@ npm test           # Vitest
 
 The dev port is fixed at 3000 because Cognito only allows `http://localhost:3000/` and the
 API URL as callback and logout URLs. FastAPI serves `frontend/dist` at `/`, so in production the
-hosted URL is the API URL and there is no CORS. `./run.sh` builds the frontend only if `dist/`
-is missing; after frontend changes run `npm run build` yourself.
+hosted URL is the API URL and there is no CORS. After frontend changes run `npm run build`.
 
 Live mode needs the public Cognito settings. Copy `frontend/.env.example` to
 `frontend/.env.local` and fill in values from `terraform output` (the Lambda build does this
@@ -123,6 +141,9 @@ automatically):
 | DB_CLUSTER_ARN | — | Aurora cluster for the Data API |
 | DB_SECRET_ARN | — | Secrets Manager secret with the database credentials |
 | DB_NAME | mcec2 | Database name |
+| AUTO_STOP_IDLE_MINUTES | 30 | Idle minutes before auto-stop; 0 turns it off |
+| PROTECTED_SERVER_IDS | — | Comma-separated servers the API won't delete |
+| SYNC_ACCESS_DOCUMENT | — | SSM document that applies access settings on a running server |
 
 Real values come from `terraform output` in `infra/`. If the Cognito or database settings are
 missing in real mode, server routes fail closed with 503; `/health` and `/docs` still work.
@@ -209,12 +230,14 @@ A running server costs money; stop it when finished. Example ready response:
 | Status | When |
 |---|---|
 | 401 | Missing, malformed, or expired token; wrong issuer or app client; an ID token instead of an access token |
-| 404 | Unknown server ID, or a server the caller doesn't own (deliberately indistinguishable) |
-| 409 | Start while stopping, stop while starting, a server row with no instance yet, or `POST /servers` over the server limit |
+| 403 | An admin attempting something only the owner can do |
+| 404 | Unknown server ID, or a server the caller can't access (deliberately indistinguishable); no user with that email; not an admin |
+| 409 | Start while stopping, stop while starting, a server row with no instance yet, `POST /servers` over the server limit, deleting a protected server, or the admin limit |
+| 422 | Invalid name, email or player name; a Minecraft player Mojang says doesn't exist |
 | 502 | EC2 call failed; AWS error details are never returned |
 | 503 | Database resuming from auto-pause (`Retry-After: 15`), or Cognito, database, or launch template not configured |
 
-Ownership is checked before any EC2 call, so an unauthorized request makes no AWS change.
+Access is checked before any EC2 call, so an unauthorized request makes no AWS change.
 EC2 state and the public IP are read from AWS on every status call; the IP changes after each
 stop/start. Only running instances with a public IP get a Minecraft status probe on port 25565;
 a timeout or refused connection returns 200 with `minecraft_ready: false`.
@@ -234,8 +257,10 @@ The CLI still works against real AWS: `python backend/ec2.py status|start|stop <
 Tests run offline: external calls are mocked and unexpected AWS or Minecraft calls fail the test.
 Coverage includes every token rejection case, cross-user access (404 with no AWS call), database
 errors and auto-pause, start/stop transitions and conflicts, region handling, registration, server
-limits, launch retries, and EC2 lifecycle and launching against moto. The frontend has Vitest tests for the API client, token renewal and
-retry logic: `cd frontend && npm test`.
+limits, launch retries, and EC2 lifecycle and launching against moto. It also covers the permissions of every
+server route for owner, admin and stranger, auto-stop (including that it never loads the database layer), and
+`user_data.sh` with its sync script run against stub `docker` and `aws` commands. The frontend has Vitest tests
+for the API client, token renewal and retry logic: `cd frontend && npm test`.
 
 ## Deployment
 
@@ -245,9 +270,11 @@ See [infra/README.md](infra/README.md). In short: `cd infra && ./build_lambda.sh
 
 - Self-signup is open; `max_servers_total` and the AWS budget are what limit cost. Cognito's default
   email sender allows about 50 confirmation emails a day.
-- No server deletion through the API yet (`DELETE /servers/{id}`).
-- `/stop` calls `StopInstances` directly; a graceful world save before stopping is still to do.
+- No world backups yet, so deleting a server is permanent.
+- `VERSION=LATEST` can upgrade a world whenever its container restarts; versions aren't pinned yet.
+- Any signed-in user with a server can test whether an email has an account by adding it as an admin.
 - No operation locks, runtime history, or cost reporting yet.
+- The dashboard doesn't use the new routes yet; see [docs/frontend-handoff](docs/frontend-handoff/README.md).
 
 ## Progress log
 

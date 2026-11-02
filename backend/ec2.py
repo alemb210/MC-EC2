@@ -1,12 +1,18 @@
 import os
 import time
+from datetime import datetime, timezone
 import boto3
 from mcstatus import JavaServer
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 #Lambda environment variable, use1 default
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 MC_PORT = 25565
+PROJECT_TAG = {"Key": "Project", "Value": "mc-ec2"}
+# Set by backend/jobs.py on a running server with no players.
+IDLE_TAG = "IdleSince"
+IDLE_TAG_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 # No client at import time: health and mock mode require no credentials.
 ec2 = None
@@ -22,11 +28,21 @@ def get_client(region=None):
 class InvalidState(Exception):
         """The instance is in a state where the requested action can't run yet."""
 
+#When the running instance became idle. A tag older than the last start is stale, so it doesn't count.
+def idle_since(inst):
+    tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
+    try:
+        since = datetime.strptime(tags[IDLE_TAG], IDLE_TAG_FORMAT).replace(tzinfo=timezone.utc)
+    except (KeyError, ValueError):
+        return None
+    launched = inst.get("LaunchTime")
+    return None if launched is not None and since < launched else since
+
 #Return state and ip of instance
 def describe(instance_id, region=None):
     resp = get_client(region).describe_instances(InstanceIds=[instance_id])
     inst = resp["Reservations"][0]["Instances"][0]
-    return {"state": inst["State"]["Name"], "ip": inst.get("PublicIpAddress")}
+    return {"state": inst["State"]["Name"], "ip": inst.get("PublicIpAddress"), "idle_since": idle_since(inst)}
 
 #Use JavaServer library to get MC server info
 def ping_minecraft(ip, timeout=3):
@@ -65,18 +81,45 @@ def stop(instance_id, region=None):
     resp = get_client(region).stop_instances(InstanceIds=[instance_id])
     return resp["StoppingInstances"][0]["CurrentState"]["Name"]
 
+#Instances launched for a server that haven't been terminated, found by tag.
+def find_instances(server_id, region=None):
+    existing = get_client(region).describe_instances(Filters=[
+        {"Name": "tag:ServerId", "Values": [server_id]},
+        {"Name": "instance-state-name", "Values": ["pending", "running", "stopping", "stopped"]}])
+    return [inst for reservation in existing["Reservations"] for inst in reservation["Instances"]]
+
+#Terminate an instance; one AWS no longer knows about is already gone.
+def terminate(instance_id, region=None):
+    try:
+        get_client(region).terminate_instances(InstanceIds=[instance_id])
+    except ClientError as exc:
+        if not exc.response["Error"]["Code"].startswith("InvalidInstanceID"):
+            raise
+
+#Every running Minecraft instance, for the auto-stop job.
+def list_running(region=None):
+    resp = get_client(region).describe_instances(Filters=[
+        {"Name": f"tag:{PROJECT_TAG['Key']}", "Values": [PROJECT_TAG["Value"]]},
+        {"Name": "instance-state-name", "Values": ["running"]}])
+    return [{"instance_id": inst["InstanceId"], "ip": inst.get("PublicIpAddress"), "idle_since": idle_since(inst),
+             "has_idle_tag": any(t["Key"] == IDLE_TAG for t in inst.get("Tags", []))}
+            for reservation in resp["Reservations"] for inst in reservation["Instances"]]
+
+def mark_idle(instance_id, since, region=None):
+    get_client(region).create_tags(Resources=[instance_id],
+                                   Tags=[{"Key": IDLE_TAG, "Value": since.strftime(IDLE_TAG_FORMAT)}])
+
+def clear_idle(instance_id, region=None):
+    get_client(region).delete_tags(Resources=[instance_id], Tags=[{"Key": IDLE_TAG}])
+
 #Launch the instance for a server from the launch template, or return the one already launched for it.
 #Instances carry Project=mc-ec2 (required by the start/stop and launch IAM policies) and ServerId.
 def launch(server_id, launch_template_id, region=None):
     client = get_client(region)
-    existing = client.describe_instances(Filters=[
-        {"Name": "tag:ServerId", "Values": [server_id]},
-        {"Name": "instance-state-name", "Values": ["pending", "running", "stopping", "stopped"]}])
-    for reservation in existing["Reservations"]:
-        for inst in reservation["Instances"]:
-            return {"instance_id": inst["InstanceId"], "state": inst["State"]["Name"],
-                    "instance_type": inst.get("InstanceType")}
-    tags = [{"Key": "Project", "Value": "mc-ec2"}, {"Key": "ServerId", "Value": server_id},
+    for inst in find_instances(server_id, region=region):
+        return {"instance_id": inst["InstanceId"], "state": inst["State"]["Name"],
+                "instance_type": inst.get("InstanceType")}
+    tags = [PROJECT_TAG, {"Key": "ServerId", "Value": server_id},
             {"Key": "Name", "Value": f"mc-ec2-{server_id[:8]}"}]
     resp = client.run_instances(
         LaunchTemplate={"LaunchTemplateId": launch_template_id, "Version": "$Default"},

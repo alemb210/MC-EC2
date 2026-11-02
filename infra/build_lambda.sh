@@ -35,7 +35,7 @@ export VITE_COGNITO_AUTHORITY VITE_COGNITO_CLIENT_ID VITE_COGNITO_DOMAIN
 (cd "$ROOT_DIR/frontend" && npm ci && npm run build)
 
 # Mirror the repo layout so backend/app.py finds ../frontend/dist.
-cp "$INFRA_DIR/lambda_handler.py" "$PKG_DIR/"
+cp "$INFRA_DIR/lambda_handler.py" "$INFRA_DIR/jobs_handler.py" "$PKG_DIR/"
 cp "$ROOT_DIR"/backend/*.py "$PKG_DIR/backend/"
 mkdir -p "$PKG_DIR/frontend"
 cp -R "$ROOT_DIR/frontend/dist" "$PKG_DIR/frontend/dist"
