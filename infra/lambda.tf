@@ -22,17 +22,23 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      MOCK_MODE            = "false"
-      COGNITO_USER_POOL_ID = aws_cognito_user_pool.main.id
-      COGNITO_CLIENT_ID    = aws_cognito_user_pool_client.web.id
-      DB_CLUSTER_ARN       = aws_rds_cluster.db.arn
-      DB_SECRET_ARN        = aws_rds_cluster.db.master_user_secret[0].secret_arn
-      DB_NAME              = aws_rds_cluster.db.database_name
-      LAUNCH_TEMPLATE_ID   = aws_launch_template.minecraft.id
-      MAX_SERVERS_PER_USER = var.max_servers_per_user
-      MAX_SERVERS_TOTAL    = var.max_servers_total
+      MOCK_MODE              = "false"
+      COGNITO_USER_POOL_ID   = aws_cognito_user_pool.main.id
+      COGNITO_CLIENT_ID      = aws_cognito_user_pool_client.web.id
+      DB_CLUSTER_ARN         = aws_rds_cluster.db.arn
+      DB_SECRET_ARN          = aws_rds_cluster.db.master_user_secret[0].secret_arn
+      DB_NAME                = aws_rds_cluster.db.database_name
+      LAUNCH_TEMPLATE_ID     = aws_launch_template.minecraft.id
+      MAX_SERVERS_PER_USER   = var.max_servers_per_user
+      MAX_SERVERS_TOTAL      = var.max_servers_total
+      AUTO_STOP_IDLE_MINUTES = var.auto_stop_idle_minutes
+      PROTECTED_SERVER_IDS   = random_uuid.admin_server.result
+      SYNC_ACCESS_DOCUMENT   = aws_ssm_document.sync_access.name
     }
   }
+
+  # New code can query columns that only exist once the migrations have run.
+  depends_on = [terraform_data.db_migrations]
 
   logging_config {
     log_format = "Text"

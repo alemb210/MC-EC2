@@ -17,13 +17,19 @@ variable "admin_name" {
 }
 
 variable "max_servers_per_user" {
-  description = "Servers each user can create through POST /servers"
+  description = "Servers each user can create"
   type        = number
   default     = 1
 }
 
 variable "max_servers_total" {
-  description = "Servers that can exist in total (including the admin's); bounds cost with open signup"
+  description = "Servers that can exist in total"
   type        = number
   default     = 3
+}
+
+variable "auto_stop_idle_minutes" {
+  description = "Minutes a running server can have no players before it is stopped; 0 turns auto-stop off"
+  type        = number
+  default     = 30
 }

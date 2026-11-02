@@ -1,10 +1,12 @@
-# Execution role for the FastAPI Lambda: logs, EC2 start/stop limited by tag, launching from the
-# Minecraft launch template, Data API access.
+# Execution role for the FastAPI Lambda: logs, EC2 start/stop/terminate limited by tag, launching from
+# the Minecraft launch template, Data API access, access settings, and looking up users by email.
 
 data "aws_caller_identity" "current" {}
 
 locals {
   ec2_arn = "arn:aws:ec2:us-east-1:${data.aws_caller_identity.current.account_id}"
+  # One parameter per server, created and deleted by the API (backend/player_access.py).
+  access_parameters_arn = "arn:aws:ssm:us-east-1:${data.aws_caller_identity.current.account_id}:parameter/mc-ec2/servers/*"
 }
 
 resource "aws_iam_role" "api" {
@@ -38,14 +40,14 @@ resource "aws_iam_role_policy" "api" {
         Resource = "*"
       },
       {
-        Sid       = "StartStopTaggedInstances"
+        Sid       = "ControlTaggedInstances"
         Effect    = "Allow"
-        Action    = ["ec2:StartInstances", "ec2:StopInstances"]
+        Action    = ["ec2:StartInstances", "ec2:StopInstances", "ec2:TerminateInstances"]
         Resource  = "arn:aws:ec2:us-east-1:${data.aws_caller_identity.current.account_id}:instance/*"
         Condition = { StringEquals = { "aws:ResourceTag/Project" = "mc-ec2" } }
       },
       # POST /servers: RunInstances only from the mc-ec2 launch template, and only with Project=mc-ec2,
-      # so launched instances are exactly the ones StartStopTaggedInstances covers.
+      # so launched instances are exactly the ones ControlTaggedInstances covers.
       {
         Sid      = "LaunchTaggedInstanceFromTemplate"
         Effect   = "Allow"
@@ -92,6 +94,31 @@ resource "aws_iam_role_policy" "api" {
         Action    = "iam:PassRole"
         Resource  = aws_iam_role.minecraft.arn
         Condition = { StringEquals = { "iam:PassedToService" = "ec2.amazonaws.com" } }
+      },
+      {
+        Sid      = "ManageAccessSettings"
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:PutParameter", "ssm:DeleteParameter"]
+        Resource = local.access_parameters_arn
+      },
+      {
+        Sid      = "SendSyncDocument"
+        Effect   = "Allow"
+        Action   = "ssm:SendCommand"
+        Resource = aws_ssm_document.sync_access.arn
+      },
+      {
+        Sid       = "SendSyncToTaggedInstances"
+        Effect    = "Allow"
+        Action    = "ssm:SendCommand"
+        Resource  = "${local.ec2_arn}:instance/*"
+        Condition = { StringEquals = { "ssm:resourceTag/Project" = "mc-ec2" } }
+      },
+      {
+        Sid      = "FindUsersByEmail"
+        Effect   = "Allow"
+        Action   = "cognito-idp:ListUsers"
+        Resource = aws_cognito_user_pool.main.arn
       },
       {
         Sid    = "DataApi"

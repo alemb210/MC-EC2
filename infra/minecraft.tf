@@ -53,6 +53,20 @@ resource "aws_iam_role_policy_attachment" "minecraft_cloudwatch" {
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
 }
 
+# Lets a server read its saved access settings at boot (mc-sync-access in minecraft/user_data.sh).
+resource "aws_iam_role_policy" "minecraft_access_settings" {
+  name = "mc-ec2-read-access-settings"
+  role = aws_iam_role.minecraft.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "ssm:GetParameter"
+      Resource = local.access_parameters_arn
+    }]
+  })
+}
+
 resource "aws_iam_instance_profile" "minecraft" {
   name = "mc-ec2"
   role = aws_iam_role.minecraft.name
@@ -66,6 +80,8 @@ resource "aws_launch_template" "minecraft" {
   ebs_optimized                        = "true"
   instance_initiated_shutdown_behavior = "stop"
   user_data                            = base64encode(file("${path.module}/minecraft/user_data.sh"))
+  # ec2.launch uses $Default, so without this new servers would keep launching from the old version.
+  update_default_version = true
 
   iam_instance_profile {
     arn = aws_iam_instance_profile.minecraft.arn
@@ -113,11 +129,12 @@ resource "aws_launch_template" "minecraft" {
     auto_recovery = "default"
   }
 
+  # Tags in metadata: a server reads its own ServerId tag to find its access settings.
   metadata_options {
     http_endpoint               = "enabled"
     http_put_response_hop_limit = 2
     http_tokens                 = "required"
-    instance_metadata_tags      = "disabled"
+    instance_metadata_tags      = "enabled"
   }
 
   network_performance_options {
@@ -148,21 +165,25 @@ resource "aws_instance" "minecraft" {
   iam_instance_profile                 = aws_iam_instance_profile.minecraft.name
   ebs_optimized                        = true
   instance_initiated_shutdown_behavior = "stop"
+  # Terraform manages this instance, so nothing else should terminate it (the API also refuses to).
+  disable_api_termination = true
 
-  # The API's IAM policy only allows start/stop on instances with this tag.
+  # The API's IAM policy only acts on instances with Project; ServerId finds the access settings.
   tags = {
-    Project = "mc-ec2"
+    Project  = "mc-ec2"
+    ServerId = random_uuid.admin_server.result
   }
 
   credit_specification {
     cpu_credits = "unlimited"
   }
 
+  # Tags in metadata: a server reads its own ServerId tag to find its access settings.
   metadata_options {
     http_endpoint               = "enabled"
     http_put_response_hop_limit = 2
     http_tokens                 = "required"
-    instance_metadata_tags      = "disabled"
+    instance_metadata_tags      = "enabled"
   }
 
   root_block_device {
@@ -177,6 +198,7 @@ resource "aws_instance" "minecraft" {
   lifecycle {
     prevent_destroy = true
     # Changing any of these would replace the instance (and its world data).
-    ignore_changes = [ami, user_data, user_data_base64, associate_public_ip_address]
+    # IdleSince is managed by the auto-stop job.
+    ignore_changes = [ami, user_data, user_data_base64, associate_public_ip_address, tags["IdleSince"]]
   }
 }
