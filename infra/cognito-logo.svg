@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="350" height="110" viewBox="0 0 350 110">
+  <rect width="350" height="110" fill="#101310"/>
+  <g transform="translate(15 29)">
+    <path d="M26 0 52 14v28L26 56 0 42V14Z" fill="#283b20"/>
+    <path d="M26 0 52 14 26 28 0 14Z" fill="#b4e88b"/>
+    <path d="M0 14 26 28v28L0 42Z" fill="#729955"/>
+    <path d="M26 28 52 14v28L26 56Z" fill="#425d32"/>
+  </g>
+  <text x="82" y="64" fill="#eef1e9" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="bold">MCWorldControl</text>
+</svg>

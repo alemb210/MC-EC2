@@ -50,9 +50,9 @@ resource "aws_cognito_user_pool_client" "web" {
   allowed_oauth_flows                  = ["code"]
   allowed_oauth_scopes                 = ["openid", "email"]
   # localhost for `npm run dev`; the API URL is where Lambda serves the built frontend.
-  callback_urls                        = ["http://localhost:3000/", "${aws_apigatewayv2_api.api.api_endpoint}/"]
-  logout_urls                          = ["http://localhost:3000/", "${aws_apigatewayv2_api.api.api_endpoint}/"]
-  supported_identity_providers         = ["COGNITO"]
+  callback_urls                = ["http://localhost:3000/", "${aws_apigatewayv2_api.api.api_endpoint}/"]
+  logout_urls                  = ["http://localhost:3000/", "${aws_apigatewayv2_api.api.api_endpoint}/"]
+  supported_identity_providers = ["COGNITO"]
 
   prevent_user_existence_errors = "ENABLED"
   enable_token_revocation       = true
@@ -73,6 +73,15 @@ resource "aws_cognito_user_pool_domain" "main" {
   domain                = "mc-ec2-${data.aws_caller_identity.current.account_id}"
   user_pool_id          = aws_cognito_user_pool.main.id
   managed_login_version = 1
+}
+
+# Classic hosted UI only accepts Cognito's documented selectors and properties.
+# Keep branding with the pool so login, signup, verification, and recovery share it.
+resource "aws_cognito_user_pool_ui_customization" "web" {
+  client_id    = aws_cognito_user_pool_client.web.id
+  user_pool_id = aws_cognito_user_pool_domain.main.user_pool_id
+  css          = file("${path.module}/cognito.css")
+  image_file   = filebase64("${path.module}/cognito-logo.png")
 }
 
 # The single admin account. Cognito emails a temporary password; no password is stored in Terraform.

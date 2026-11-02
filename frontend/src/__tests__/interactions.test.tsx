@@ -59,7 +59,8 @@ const statusRoute = { "GET /servers/s1/status": { body: statusBody() } };
 
 describe("rename", () => {
   const open = async () => {
-    await screen.findByText("stopped");
+    await screen.findByText("Stopped");
+    fireEvent.click(button("Manage"));
     fireEvent.click(button("Rename"));
     return screen.getByLabelText("Server name");
   };
@@ -70,7 +71,7 @@ describe("rename", () => {
     const input = await open();
     type(input, "  Creative  ");
     fireEvent.submit(input.closest("form")!);
-    await screen.findByRole("heading", { name: "Creative" });
+    await screen.findAllByRole("heading", { name: "Creative" });
     expect(server.sent("PATCH", "/servers/s1")[0].body).toEqual({ name: "Creative" });
     expect(onChanged).toHaveBeenCalledOnce();
     expect(screen.queryByLabelText("Server name")).toBeNull();
@@ -125,7 +126,7 @@ describe("rename", () => {
     fireEvent.submit(form);
     fireEvent.submit(form);
     release();
-    await screen.findByRole("heading", { name: "New" });
+    await screen.findAllByRole("heading", { name: "New" });
     expect(server.sent("PATCH", "/servers/s1")).toHaveLength(1);
   });
 
@@ -135,7 +136,7 @@ describe("rename", () => {
     const input = await open();
     type(input, "By admin");
     fireEvent.submit(input.closest("form")!);
-    await screen.findByRole("heading", { name: /By admin/ });
+    await screen.findAllByRole("heading", { name: /By admin/ });
     expect(server.sent("PATCH", "/servers/s1")).toHaveLength(1);
   });
 
@@ -155,14 +156,15 @@ describe("unnamed servers", () => {
   it("shows the ID as the title", async () => {
     api(route);
     card(unnamed);
-    await screen.findByText("stopped");
+    await screen.findByText("Stopped");
     expect(within(screen.getByRole("heading")).getByText(unnamed.serverId).tagName).toBe("CODE");
   });
 
   it("starts renaming from a blank field, without an error yet", async () => {
     const server = api({ ...route, [`PATCH ${path}`]: { body: summary({ server_id: unnamed.serverId, name: "Survival" }) } });
     card(unnamed);
-    await screen.findByText("stopped");
+    await screen.findByText("Stopped");
+    fireEvent.click(button("Manage"));
     fireEvent.click(button("Rename"));
     const input = screen.getByLabelText("Server name") as HTMLInputElement;
     expect(input.value).toBe("");
@@ -170,14 +172,15 @@ describe("unnamed servers", () => {
     expect(button("Save").disabled).toBe(true);
     type(input, "Survival");
     fireEvent.submit(input.closest("form")!);
-    await screen.findByRole("heading", { name: "Survival" });
+    await screen.findAllByRole("heading", { name: "Survival" });
     expect(server.sent("PATCH", path)[0].body).toEqual({ name: "Survival" });
   });
 
   it("asks for a short part of the ID to confirm deleting", async () => {
     api({ ...route, [`DELETE ${path}`]: { status: 204 } });
     card(unnamed);
-    await screen.findByText("stopped");
+    await screen.findByText("Stopped");
+    fireEvent.click(button("Manage"));
     fireEvent.click(button("Delete"));
     const input = screen.getByLabelText(/to confirm/);
     type(input, unnamed.serverId);
@@ -190,7 +193,8 @@ describe("unnamed servers", () => {
 
 describe("delete", () => {
   const open = async () => {
-    await screen.findByText("stopped");
+    await screen.findByText("Stopped");
+    fireEvent.click(button("Manage"));
     fireEvent.click(button("Delete"));
     return screen.getByLabelText(/to confirm/);
   };
@@ -237,7 +241,8 @@ describe("delete", () => {
   it("warns when players are online", async () => {
     api({ "GET /servers/s1/status": { body: statusBody({ instance_state: "running", minecraft_ready: true, players_online: 3, players_max: 20 }) } });
     card();
-    await screen.findByText("running");
+    await screen.findByText("Ready to join");
+    fireEvent.click(button("Manage"));
     fireEvent.click(button("Delete"));
     expect(screen.getByText("3 player(s) are online right now.")).toBeTruthy();
   });
@@ -245,7 +250,7 @@ describe("delete", () => {
   it("isn't offered to admins", async () => {
     api(statusRoute);
     card({ role: "admin" });
-    await screen.findByText("stopped");
+    await screen.findByText("Stopped");
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Admins" })).toBeNull();
   });
@@ -253,7 +258,8 @@ describe("delete", () => {
 
 describe("leave", () => {
   const leave = async () => {
-    await screen.findByText("stopped");
+    await screen.findByText("Stopped");
+    fireEvent.click(button("Manage"));
     fireEvent.click(button("Leave"));
   };
 
@@ -311,6 +317,27 @@ describe("unfinished servers", () => {
 });
 
 describe("server status", () => {
+  it("keeps management in a keyboard-operable settings panel", async () => {
+    api(statusRoute);
+    card();
+    await screen.findByText("Stopped");
+    expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+    const manage = button("Manage");
+    fireEvent.click(manage);
+    const dialog = screen.getByRole("dialog", { name: "Survival settings" });
+    expect(within(dialog).getByRole("button", { name: "Rename" })).toBeTruthy();
+    expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Close settings" }));
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(manage);
+  });
+
+  it("does not offer Stop while Minecraft is still starting", async () => {
+    api({ "GET /servers/s1/status": { body: statusBody({ instance_state: "running", minecraft_ready: false }) } });
+    card();
+    await screen.findByText("Starting Minecraft");
+    expect(button("Stop").disabled).toBe(true);
+  });
   it("reloads the list when the server is gone, such as after being removed as an admin", async () => {
     api({ "GET /servers/s1/status": gone });
     const onChanged = card({ role: "admin" });
@@ -785,6 +812,38 @@ describe("create form", () => {
 });
 
 describe("dashboard", () => {
+  it("reaches player access and administrator controls through Manage", async () => {
+    api({
+      "GET /servers": { body: [summary()] },
+      "GET /servers/s1/status": { body: statusBody() },
+      "GET /servers/s1/access": { body: { mode: "whitelist", players: ["Steve"] } },
+      "GET /servers/s1/admins": { body: [] },
+    });
+    render(<Dashboard session={session} />);
+    await screen.findByText("Stopped");
+    fireEvent.click(button("Manage"));
+    const dialog = screen.getByRole("dialog", { name: "Survival settings" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Player access" }));
+    expect((await screen.findByLabelText("Minecraft usernames") as HTMLTextAreaElement).value).toBe("Steve");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Admins" }));
+    expect(await screen.findByLabelText("Add by email")).toBeTruthy();
+  });
+
+  it("filters owned and shared servers from the authorized list", async () => {
+    api({
+      "GET /servers": { body: [summary(), summary({ server_id: "s2", name: "Friends", role: "admin" })] },
+      "GET /servers/s1/status": { body: statusBody() },
+      "GET /servers/s2/status": { body: statusBody({ server_id: "s2" }) },
+    });
+    render(<Dashboard session={session} />);
+    await screen.findByRole("heading", { name: /Friends/ });
+    fireEvent.click(screen.getByRole("button", { name: /Owned/ }));
+    expect(screen.getByRole("heading", { name: "Survival" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /Friends/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Shared/ }));
+    expect(screen.getByRole("heading", { name: /Friends/ })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Survival" })).toBeNull();
+  });
   const list = (servers: ServerSummary[]) => ({
     "GET /servers": { body: servers },
     ...Object.fromEntries(servers.map((s) => [`GET /servers/${s.server_id}/status`, { body: statusBody({ server_id: s.server_id }) }])),

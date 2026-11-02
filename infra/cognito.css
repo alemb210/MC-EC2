@@ -1,0 +1,12 @@
+.background-customizable { background-color: #101310; }
+.banner-customizable { background-color: #181d18; }
+.label-customizable { color: #eef1e9; font-weight: 600; }
+.textDescription-customizable { color: #c5d0bf; }
+.inputField-customizable { color: #eef1e9; background-color: #181d18; border: 1px solid #53634b; }
+.inputField-customizable:focus { border-color: #b4e88b; outline: 2px; }
+.submitButton-customizable { color: #172210; background-color: #b4e88b; font-weight: bold; }
+.submitButton-customizable:hover { color: #172210; background-color: #c5f49d; }
+.errorMessage-customizable { color: #ffb5aa; background: #351f1c; border: 1px solid #65403a; }
+.redirect-customizable { color: #b4e88b; }
+.passwordCheck-valid-customizable { color: #b4e88b; }
+.passwordCheck-notValid-customizable { color: #ffb5aa; }

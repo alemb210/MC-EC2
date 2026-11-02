@@ -39,7 +39,7 @@ it("explains an unfinished launch and disables lifecycle actions", () => {
     expect(html).toContain("Awaiting instance");
     expect(html).toContain("Use Resume creation");
     expect(html).toContain('<button disabled="">Start</button>');
-    expect(html).toContain('<button disabled="">Stop</button>');
+    expect(html).not.toContain('>Stop</button>');
   } finally {
     spy.mockRestore();
   }

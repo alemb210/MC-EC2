@@ -4,6 +4,7 @@ import { config } from "../config";
 import type { Mode } from "../hooks/useHealth";
 import type { AuthSession } from "../recovery";
 import Dashboard from "./Dashboard";
+import Landing from "./Landing";
 import Shell from "./Shell";
 
 const oidc: AuthProviderProps = {
@@ -28,10 +29,12 @@ function Gate({ mode }: { mode: Mode }) {
   const authRef = useRef(auth);
   authRef.current = auth;
   const [expired, setExpired] = useState(false);
+  const [showLanding, setShowLanding] = useState(false);
   // Several cards can hit a 401 at once; share one renewal between them.
   const renewing = useRef<Promise<string | null> | null>(null);
 
   const logout = async () => {
+    setShowLanding(false);
     await auth.revokeTokens(["refresh_token"]).catch(() => {});
     await auth.removeUser();
     window.location.assign(
@@ -42,6 +45,7 @@ function Gate({ mode }: { mode: Mode }) {
 
   const login = () => {
     setExpired(false);
+    setShowLanding(false);
     void auth.signinRedirect();
   };
 
@@ -52,7 +56,8 @@ function Gate({ mode }: { mode: Mode }) {
   if (auth.error) {
     return (
       <Shell mode={mode}>
-        <p className="error">{auth.error.message}</p>
+        <p className="error">We couldn't finish signing you in: {auth.error.message}</p>
+        <p>Try again to return to your servers. You can also reset your password on the Cognito login page.</p>
         <button onClick={login}>Try again</button>
       </Shell>
     );
@@ -60,11 +65,7 @@ function Gate({ mode }: { mode: Mode }) {
 
   if (!auth.isAuthenticated || !auth.user) {
     return (
-      <Shell mode={mode}>
-        {expired && <p className="error">Your session expired.</p>}
-        <p className="muted">Log in to see your servers.</p>
-        <button onClick={login}>Log in</button>
-      </Shell>
+      <>{expired && <p className="session-expired" role="alert">Your session expired. Log in again to see your servers.</p>}<Landing onEnter={login} /></>
     );
   }
 
@@ -90,8 +91,10 @@ function Gate({ mode }: { mode: Mode }) {
     </>
   );
 
+  if (showLanding) return <Landing signedIn accountEmail={auth.user.profile.email} onLogout={() => { void logout(); }} onEnter={() => setShowLanding(false)} />;
+
   return (
-    <Shell mode={mode} account={account}>
+    <Shell mode={mode} account={account} onBrandClick={() => setShowLanding(true)}>
       {/* Keyed by user so a different login starts with a fresh server list. */}
       <Dashboard key={auth.user.profile.sub} session={session} />
     </Shell>
