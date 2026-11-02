@@ -16,6 +16,12 @@ class Settings(BaseModel):
     # Caps on POST /servers. Self-signup is open, so these bound what strangers can launch.
     max_servers_per_user: int = Field(default=1, ge=0)
     max_servers_total: int = Field(default=3, ge=0)
+    # Idle minutes before the auto-stop job stops a server; 0 turns auto-stop off.
+    auto_stop_idle_minutes: int = Field(default=30, ge=0)
+    # Servers the API must not delete (Terraform manages the admin's instance).
+    protected_server_ids: frozenset[str] = frozenset()
+    # SSM document that makes a running server apply its saved access settings.
+    sync_access_document: str | None = None
 
     @classmethod
     def from_env(cls):
@@ -33,4 +39,8 @@ class Settings(BaseModel):
                    db_name=os.environ.get("DB_NAME") or "mcec2",
                    launch_template_id=os.environ.get("LAUNCH_TEMPLATE_ID") or None,
                    max_servers_per_user=int(os.environ.get("MAX_SERVERS_PER_USER") or 1),
-                   max_servers_total=int(os.environ.get("MAX_SERVERS_TOTAL") or 3))
+                   max_servers_total=int(os.environ.get("MAX_SERVERS_TOTAL") or 3),
+                   auto_stop_idle_minutes=int(os.environ.get("AUTO_STOP_IDLE_MINUTES") or 30),
+                   protected_server_ids=frozenset(
+                       s for s in os.environ.get("PROTECTED_SERVER_IDS", "").split(",") if s),
+                   sync_access_document=os.environ.get("SYNC_ACCESS_DOCUMENT") or None)

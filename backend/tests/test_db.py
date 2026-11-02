@@ -3,7 +3,7 @@ import uuid
 from unittest.mock import Mock
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
-from db import DatabaseUnavailable, OwnedServer, ServerLimitReached, ServerRepository, ServerRow
+from db import AdminLimitReached, DatabaseUnavailable, OwnedServer, ServerLimitReached, ServerRepository, ServerRow
 
 SERVER_ID = "3f2a6c1e-0000-4000-8000-000000000001"
 
@@ -18,7 +18,7 @@ def repository(records=None, error=None):
 
 def test_owned_server_query_is_parameterized():
     repo = repository([{"id": SERVER_ID, "instance_id": "i-test", "region": "us-east-1"}])
-    assert repo.get_owned_server("owner-sub", SERVER_ID) == OwnedServer(SERVER_ID, "i-test", "us-east-1")
+    assert repo.get_server_for_user("owner-sub", SERVER_ID) == OwnedServer(SERVER_ID, "i-test", "us-east-1")
     kwargs = repo.client.execute_statement.call_args.kwargs
     assert (kwargs["resourceArn"], kwargs["secretArn"], kwargs["database"]) == ("arn:cluster", "arn:secret", "mcec2")
     assert kwargs["formatRecordsAs"] == "JSON"
@@ -28,22 +28,22 @@ def test_owned_server_query_is_parameterized():
         {"name": "server_id", "value": {"stringValue": SERVER_ID}, "typeHint": "UUID"}]
 
 def test_not_owned_returns_none():
-    assert repository([]).get_owned_server("stranger", SERVER_ID) is None
+    assert repository([]).get_server_for_user("stranger", SERVER_ID) is None
 
 def test_null_instance_id():
     repo = repository([{"id": SERVER_ID, "region": "us-east-1"}])  # JSON records omit NULL columns
-    assert repo.get_owned_server("owner-sub", SERVER_ID).instance_id is None
+    assert repo.get_server_for_user("owner-sub", SERVER_ID).instance_id is None
 
 @pytest.mark.parametrize("server_id", ["my-server", "", "1; DROP TABLE servers"])
 def test_non_uuid_ids_skip_the_database(server_id):
     repo = repository()
-    assert repo.get_owned_server("owner-sub", server_id) is None
+    assert repo.get_server_for_user("owner-sub", server_id) is None
     repo.client.execute_statement.assert_not_called()
 
 def test_resuming_database_sets_retry_after():
     error = ClientError({"Error": {"Code": "DatabaseResumingException"}}, "ExecuteStatement")
     with pytest.raises(DatabaseUnavailable) as exc:
-        repository(error=error).get_owned_server("owner-sub", SERVER_ID)
+        repository(error=error).get_server_for_user("owner-sub", SERVER_ID)
     assert exc.value.retry_after == 15
 
 @pytest.mark.parametrize("error", [
@@ -51,7 +51,7 @@ def test_resuming_database_sets_retry_after():
     EndpointConnectionError(endpoint_url="https://rds-data.example")])
 def test_other_database_errors(error):
     with pytest.raises(DatabaseUnavailable) as exc:
-        repository(error=error).get_owned_server("owner-sub", SERVER_ID)
+        repository(error=error).get_server_for_user("owner-sub", SERVER_ID)
     assert exc.value.retry_after is None
 
 def test_param_types():
@@ -153,14 +153,94 @@ def test_attach_instance_only_fills_empty_rows():
     assert "instance_id IS NULL" in kwargs["sql"]
     assert {p["name"] for p in kwargs["parameters"]} == {"server_id", "instance_id", "instance_type"}
 
-def test_list_owned_servers():
+def test_list_servers():
     repo = repository([
         {"id": SERVER_ID, "region": "us-east-1", "version": "LATEST", "instance_type": "t4g.small", "has_instance": True},
         {"id": USER_ID, "region": "us-east-1", "version": "LATEST", "has_instance": False}])  # NULL type omitted
-    assert repo.list_owned_servers("owner-sub") == [
+    assert repo.list_servers("owner-sub") == [
         ServerRow(SERVER_ID, "us-east-1", "LATEST", "t4g.small", True),
         ServerRow(USER_ID, "us-east-1", "LATEST", None, False)]
     kwargs = repo.client.execute_statement.call_args.kwargs
     assert "owner-sub" not in kwargs["sql"]
     assert "instance_id AS" not in kwargs["sql"]
     assert kwargs["parameters"] == [{"name": "sub", "value": {"stringValue": "owner-sub"}}]
+
+def test_list_servers_includes_name_and_role():
+    repo = repository([{"id": SERVER_ID, "region": "us-east-1", "has_instance": True, "name": "Survival", "role": "admin"}])
+    assert repo.list_servers("admin-sub") == [ServerRow(SERVER_ID, "us-east-1", None, None, True, "Survival", "admin")]
+    assert "server_admins" in sqls(repo)[0]
+
+def test_server_for_user_includes_admins_and_role():
+    repo = repository([{"id": SERVER_ID, "instance_id": "i-test", "region": "us-east-1", "name": "Survival", "role": "admin"}])
+    server = repo.get_server_for_user("admin-sub", SERVER_ID)
+    assert (server.name, server.role) == ("Survival", "admin")
+    assert "server_admins" in sqls(repo)[0]
+
+# --- Names ---
+
+def test_reserve_server_saves_name_parameterized():
+    repo = transactional([{"locked": 1}], [], [{"mine": 0, "total": 0}],
+                         [{"id": SERVER_ID, "region": "us-east-1", "name": "Survival"}])
+    assert repo.reserve_server(USER_ID, "us-east-1", "LATEST", 1, 3, name="Survival").name == "Survival"
+    insert = repo.client.execute_statement.call_args.kwargs
+    assert "Survival" not in insert["sql"]
+    assert {"name": "name", "value": {"stringValue": "Survival"}} in insert["parameters"]
+
+def test_reserve_server_resume_keeps_original_name():
+    repo = transactional([{"locked": 1}], [{"id": SERVER_ID, "region": "us-east-1", "name": "Original"}])
+    assert repo.reserve_server(USER_ID, "us-east-1", "LATEST", 1, 3, name="New").name == "Original"
+    assert not any(sql.startswith("UPDATE") or sql.startswith("INSERT") for sql in sqls(repo))
+
+def test_rename_is_parameterized():
+    repo = repository()
+    repo.rename_server(SERVER_ID, "'; DROP TABLE servers; --")
+    kwargs = repo.client.execute_statement.call_args.kwargs
+    assert "DROP" not in kwargs["sql"]
+
+# --- Deletion ---
+
+def test_delete_server():
+    repo = repository()
+    repo.delete_server(SERVER_ID)
+    assert sqls(repo)[0].startswith("DELETE FROM servers WHERE id = :server_id")
+
+@pytest.mark.parametrize("records,expected", [([{"found": 1}], True), ([], False)])
+def test_server_exists(records, expected):
+    assert repository(records).server_exists(SERVER_ID) is expected
+
+# --- Admins ---
+
+def test_add_admin_inserts_under_lock():
+    repo = transactional([{"locked": 1}], [{"existing": 0, "total": 1}], [])
+    repo.add_admin(SERVER_ID, USER_ID, "friend@example.com", 5)
+    assert "pg_advisory_xact_lock" in sqls(repo)[0]
+    assert sqls(repo)[-1].startswith("INSERT INTO server_admins")
+    assert "friend@example.com" not in sqls(repo)[-1]
+    repo.client.commit_transaction.assert_called_once()
+
+def test_add_existing_admin_changes_nothing():
+    repo = transactional([{"locked": 1}], [{"existing": 1, "total": 5}])
+    repo.add_admin(SERVER_ID, USER_ID, "friend@example.com", 5)
+    assert not any(sql.startswith("INSERT") for sql in sqls(repo))
+
+def test_add_admin_over_limit():
+    repo = transactional([{"locked": 1}], [{"existing": 0, "total": 5}])
+    with pytest.raises(AdminLimitReached):
+        repo.add_admin(SERVER_ID, USER_ID, "friend@example.com", 5)
+    assert not any(sql.startswith("INSERT") for sql in sqls(repo))
+    repo.client.rollback_transaction.assert_called_once()
+
+@pytest.mark.parametrize("records,expected", [([{"user_id": USER_ID}], True), ([], False)])
+def test_remove_admin(records, expected):
+    assert repository(records).remove_admin(SERVER_ID, USER_ID) is expected
+
+def test_remove_admin_non_uuid_skips_the_database():
+    repo = repository()
+    assert repo.remove_admin(SERVER_ID, "1; DROP TABLE users") is False
+    repo.client.execute_statement.assert_not_called()
+
+def test_migrations_exist_in_order():
+    from pathlib import Path
+    migrations = Path(__file__).resolve().parents[2] / "infra" / "db" / "migrations"
+    assert "name text NOT NULL" in (migrations / "002_server_names.sql").read_text()
+    assert "ON DELETE CASCADE" in (migrations / "003_server_admins.sql").read_text()

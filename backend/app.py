@@ -7,9 +7,11 @@ from fastapi.staticfiles import StaticFiles
 from auth import Principal, build_verifier, current_user_dependency
 from config import Settings
 from db import DatabaseUnavailable, build_repository
-from db import ServerLimitReached
-from models import HealthResponse, ServerAction, ServerCreated, ServerStatus, ServerSummary, UserResponse
-from service import AWSUnavailable, CreationUnavailable, InvalidServerState, StatusService, UnknownServer
+from db import AdminLimitReached, ServerLimitReached
+from models import (AccessSettings, AccessUpdated, AdminCreate, HealthResponse, ServerAction, ServerAdmin,
+                    ServerCreate, ServerCreated, ServerRename, ServerStatus, ServerSummary, UserResponse)
+from service import (AWSUnavailable, CreationUnavailable, InvalidServerState, NotPermitted, StatusService,
+                     UnknownAdmin, UnknownPlayers, UnknownServer, UnknownUser)
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 NOT_BUILT_PAGE = ("<!doctype html><title>MC-EC2</title>"
@@ -37,10 +39,11 @@ NOT_BUILT_PAGE = ("<!doctype html><title>MC-EC2</title>"
 
 SERVER_ERRORS = {
     401: {"description": "Missing, invalid, or expired access token"},
-    404: {"description": "Unknown server, or not owned by the caller"},
+    404: {"description": "Unknown server, or one the caller can't access"},
     502: {"description": "AWS could not be reached"},
     503: {"description": "Database or authentication temporarily unavailable"},
 }
+OWNER_ERRORS = {**SERVER_ERRORS, 403: {"description": "Only the server's owner can do this"}}
 
 
 def create_app(settings: Settings | None = None, verifier=None, repository=None) -> FastAPI:
@@ -64,6 +67,16 @@ def create_app(settings: Settings | None = None, verifier=None, repository=None)
             return fn(*args)
         except UnknownServer:
             raise HTTPException(404, "Unknown server ID") from None
+        except UnknownUser:
+            raise HTTPException(404, "No user with that email.") from None
+        except UnknownAdmin:
+            raise HTTPException(404, "That user isn't an admin of this server.") from None
+        except NotPermitted:
+            raise HTTPException(403, "Only the server's owner can do this.") from None
+        except UnknownPlayers as e:
+            raise HTTPException(422, f"These Minecraft players don't exist: {e}") from None
+        except AdminLimitReached:
+            raise HTTPException(409, "This server already has the maximum number of admins.") from None
         except InvalidServerState as e:
             raise HTTPException(409, str(e)) from None
         except ServerLimitReached:
@@ -73,8 +86,8 @@ def create_app(settings: Settings | None = None, verifier=None, repository=None)
         except DatabaseUnavailable as e:
             headers = {"Retry-After": str(e.retry_after)} if e.retry_after else None
             raise HTTPException(503, "Database unavailable. Try again shortly.", headers=headers) from None
-        except AWSUnavailable:
-            raise HTTPException(502, "Unable to reach EC2. Check AWS credentials, region, permissions, and connectivity.") from None
+        except AWSUnavailable as e:
+            raise HTTPException(502, str(e) or "Unable to reach EC2. Check AWS credentials, region, permissions, and connectivity.") from None
 
     @app.post("/me", response_model=UserResponse,
               responses={201: {"description": "User registered"}, 401: SERVER_ERRORS[401], 503: SERVER_ERRORS[503]})
@@ -87,17 +100,52 @@ def create_app(settings: Settings | None = None, verifier=None, repository=None)
     @app.get("/servers", response_model=list[ServerSummary],
              responses={401: SERVER_ERRORS[401], 503: SERVER_ERRORS[503]})
     def list_servers(principal: Principal = Depends(current_user)):
-        """Registers the caller if needed, then lists their servers, oldest first."""
+        """Registers the caller if needed, then lists servers they own or administer, oldest first."""
         return run(service.list_servers, principal)
 
     @app.post("/servers", response_model=ServerCreated, status_code=201,
               responses={401: SERVER_ERRORS[401], 409: {"description": "Server limit reached"},
                          502: SERVER_ERRORS[502], 503: {"description": "Database unavailable, or server creation not configured"}})
-    def create_server(principal: Principal = Depends(current_user)):
-        """Launches a Minecraft server for the caller, registering them first if needed.
+    def create_server(request: ServerCreate | None = None, principal: Principal = Depends(current_user)):
+        """Launches a Minecraft server for the caller, registering them first if needed. The body is
+        optional: without a name it gets a default one, and without access settings it's public.
 
         Retrying after a failed launch resumes the same server instead of creating another."""
-        return run(service.create_server, principal)
+        return run(service.create_server, principal, request)
+
+    @app.patch("/servers/{server_id}", response_model=ServerSummary, responses=SERVER_ERRORS)
+    def rename(server_id: str, request: ServerRename, principal: Principal = Depends(current_user)):
+        return run(service.rename_server, server_id, request.name, principal)
+
+    @app.delete("/servers/{server_id}", status_code=204,
+                responses={**OWNER_ERRORS, 409: {"description": "Server is protected"}})
+    def delete_server(server_id: str, principal: Principal = Depends(current_user)) -> None:
+        """Permanently deletes the server and its world. Safe to retry after a failure."""
+        run(service.delete_server, server_id, principal)
+
+    @app.get("/servers/{server_id}/access", response_model=AccessSettings, responses=SERVER_ERRORS)
+    def get_access(server_id: str, principal: Principal = Depends(current_user)):
+        return run(service.get_access, server_id, principal)
+
+    @app.put("/servers/{server_id}/access", response_model=AccessUpdated, responses=SERVER_ERRORS)
+    def update_access(server_id: str, request: AccessSettings, principal: Principal = Depends(current_user)):
+        """Replaces the access settings. Works while the server is stopped; it applies them when it next boots."""
+        return run(service.update_access, server_id, request, principal)
+
+    @app.get("/servers/{server_id}/admins", response_model=list[ServerAdmin], responses=OWNER_ERRORS)
+    def list_admins(server_id: str, principal: Principal = Depends(current_user)):
+        return run(service.list_admins, server_id, principal)
+
+    @app.post("/servers/{server_id}/admins", response_model=ServerAdmin, status_code=201,
+              responses={**OWNER_ERRORS, 409: {"description": "Admin limit reached, or the caller's own email"}})
+    def add_admin(server_id: str, request: AdminCreate, principal: Principal = Depends(current_user)):
+        """Makes a site user an admin of this server immediately. Adding an existing admin changes nothing."""
+        return run(service.add_admin, server_id, request.email, principal)
+
+    @app.delete("/servers/{server_id}/admins/{user_id}", status_code=204, responses=OWNER_ERRORS)
+    def remove_admin(server_id: str, user_id: str, principal: Principal = Depends(current_user)) -> None:
+        """Removes an admin. An admin can remove themselves with the user ID "me"."""
+        run(service.remove_admin, server_id, user_id, principal)
 
     # Synchronous routes run in FastAPI's worker thread pool, keeping blocking
     # SDK and Minecraft calls off the async event loop.
