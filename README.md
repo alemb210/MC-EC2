@@ -97,7 +97,8 @@ Restart after configuration changes.
 ## Frontend
 
 The dashboard in `frontend/` (React, Vite, TypeScript) lists the servers a user owns or administers
-from `GET /servers`. A form creates a server with a name and a public or whitelist choice. Each card
+from `GET /servers`. The Create server button opens a form for an optional name and a public or whitelist
+choice; a server with no custom name goes by its ID. Each card
 shows state, Minecraft readiness, address, players and version, an auto-stop countdown when the server is
 empty, and Start, Stop, Refresh and Copy address. Owners and admins can rename a server and edit who can
 join, even while it's stopped. Owners can also manage admins and delete the server; admins can leave.

@@ -23,6 +23,9 @@ h1 { font-size: 22px; margin: 0; }
 
 .create { margin-bottom: 20px; }
 .create p { margin: 10px 0 0; }
+.create-form { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 20px; max-width: 480px; }
+.create-form .access p { margin: 8px 0 0; }
+.create-form > p { margin: 10px 0 0; }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }

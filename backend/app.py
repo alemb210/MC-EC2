@@ -108,7 +108,7 @@ def create_app(settings: Settings | None = None, verifier=None, repository=None)
                          502: SERVER_ERRORS[502], 503: {"description": "Database unavailable, or server creation not configured"}})
     def create_server(request: ServerCreate | None = None, principal: Principal = Depends(current_user)):
         """Launches a Minecraft server for the caller, registering them first if needed. The body is
-        optional: without a name it gets a default one, and without access settings it's public.
+        optional: without a name it goes by its ID, and without access settings it's public.
 
         Retrying after a failed launch resumes the same server instead of creating another."""
         return run(service.create_server, principal, request)

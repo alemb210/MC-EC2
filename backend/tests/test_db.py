@@ -186,6 +186,11 @@ def test_reserve_server_saves_name_parameterized():
     assert "Survival" not in insert["sql"]
     assert {"name": "name", "value": {"stringValue": "Survival"}} in insert["parameters"]
 
+def test_reserve_server_without_name_stores_null():
+    repo = transactional([{"locked": 1}], [], [{"mine": 0, "total": 0}], [{"id": SERVER_ID, "region": "us-east-1"}])
+    assert repo.reserve_server(USER_ID, "us-east-1", "LATEST", 1, 3).name is None
+    assert {"name": "name", "value": {"isNull": True}} in repo.client.execute_statement.call_args.kwargs["parameters"]
+
 def test_reserve_server_resume_keeps_original_name():
     repo = transactional([{"locked": 1}], [{"id": SERVER_ID, "region": "us-east-1", "name": "Original"}])
     assert repo.reserve_server(USER_ID, "us-east-1", "LATEST", 1, 3, name="New").name == "Original"
@@ -244,3 +249,4 @@ def test_migrations_exist_in_order():
     migrations = Path(__file__).resolve().parents[2] / "infra" / "db" / "migrations"
     assert "name text NOT NULL" in (migrations / "002_server_names.sql").read_text()
     assert "ON DELETE CASCADE" in (migrations / "003_server_admins.sql").read_text()
+    assert "DROP NOT NULL" in (migrations / "004_optional_server_names.sql").read_text()

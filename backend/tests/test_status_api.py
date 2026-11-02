@@ -52,7 +52,7 @@ class FakeRepository:
         self.calls.append(("list", sub))
         if self.error:
             raise self.error
-        return [ServerRow(s.id, s.region, "LATEST", "t4g.small", s.instance_id is not None, s.name or "Survival", s.role)
+        return [ServerRow(s.id, s.region, "LATEST", "t4g.small", s.instance_id is not None, s.name, s.role)
                 for (owner, _), s in self.servers.items() if owner == sub]
 
     def rename_server(self, server_id, name):
@@ -102,7 +102,7 @@ class FakeRepository:
         self.registered = (*self.registered, sub)
         return f"user-{sub}", created
 
-    def reserve_server(self, user_id, region, version, max_per_user, max_total, name="Minecraft server"):
+    def reserve_server(self, user_id, region, version, max_per_user, max_total, name=None):
         self.calls.append(("reserve_server", user_id, region, version, max_per_user, max_total))
         if self.limit_reached:
             raise ServerLimitReached
@@ -472,9 +472,9 @@ def test_list_returns_only_the_callers_servers():
     response = real_api(repository).get("/servers", headers=auth())
     assert response.status_code == 200
     assert response.json() == [
-        {"server_id": SERVER_ID, "name": "Survival", "role": "owner", "region": "us-east-1",
+        {"server_id": SERVER_ID, "name": SERVER_ID, "role": "owner", "region": "us-east-1",
          "minecraft_version": "LATEST", "instance_type": "t4g.small", "has_instance": True},
-        {"server_id": NEW_SERVER_ID, "name": "Survival", "role": "owner", "region": "us-east-1",
+        {"server_id": NEW_SERVER_ID, "name": NEW_SERVER_ID, "role": "owner", "region": "us-east-1",
          "minecraft_version": "LATEST", "instance_type": "t4g.small", "has_instance": False}]
     assert "i-test" not in response.text  # EC2 instance IDs are never exposed
     assert repository.calls == [("ensure_user", OWNER_SUB), ("list", OWNER_SUB)]
@@ -509,7 +509,7 @@ def test_create_server_launches_from_template(monkeypatch):
     repository = FakeRepository()
     response = real_api(repository).post("/servers", headers=auth())
     assert response.status_code == 201
-    assert response.json() == {"server_id": NEW_SERVER_ID, "name": "Minecraft server",
+    assert response.json() == {"server_id": NEW_SERVER_ID, "name": NEW_SERVER_ID,
                                "instance_state": "pending", "region": "us-east-1",
                                "minecraft_version": "LATEST", "instance_type": "t4g.small"}
     kwargs = client.run_instances.call_args.kwargs
@@ -667,6 +667,21 @@ def test_invalid_names_rejected_before_any_change(monkeypatch, name):
         assert api.post("/servers", headers=auth(), json={"name": name}).status_code == 422
     client.run_instances.assert_not_called()
     assert repository.calls == []
+
+def test_list_prefers_custom_name_over_id():
+    repository = FakeRepository({(OWNER_SUB, SERVER_ID): OwnedServer(SERVER_ID, "i-test", "us-east-1", "Survival")})
+    assert real_api(repository).get("/servers", headers=auth()).json()[0]["name"] == "Survival"
+
+def test_unnamed_server_can_be_given_a_name():
+    api = real_api(FakeRepository())
+    assert api.get("/servers", headers=auth()).json()[0]["name"] == SERVER_ID
+    assert api.patch(f"/servers/{SERVER_ID}", headers=auth(), json={"name": "Survival"}).json()["name"] == "Survival"
+    assert api.get("/servers", headers=auth()).json()[0]["name"] == "Survival"
+
+def test_admin_can_rename():
+    repository = role_repository()
+    response = real_api(repository).patch(f"/servers/{SERVER_ID}", headers=auth(token(sub=ADMIN_SUB)), json={"name": "By admin"})
+    assert (response.status_code, response.json()["name"], response.json()["role"]) == (200, "By admin", "admin")
 
 def test_rename_returns_updated_summary():
     repository = FakeRepository()

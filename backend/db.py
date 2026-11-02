@@ -38,8 +38,6 @@ class ServerRow:
     name: str | None = None
     role: str = "owner"
 
-DEFAULT_SERVER_NAME = "Minecraft server"
-
 # The caller's relationship to a server; used by queries that join identities i to servers s.
 ROLE_SQL = "CASE WHEN s.owner_id = i.user_id THEN 'owner' ELSE 'admin' END AS role"
 CAN_ACCESS_SQL = ("(s.owner_id = i.user_id OR EXISTS (SELECT 1 FROM server_admins a "
@@ -134,7 +132,7 @@ class ServerRepository:
         return str(user_id), True
 
     def reserve_server(self, user_id: str, region: str, version: str,
-                       max_per_user: int, max_total: int, name: str = DEFAULT_SERVER_NAME) -> OwnedServer:
+                       max_per_user: int, max_total: int, name: str | None = None) -> OwnedServer:
         """A server row for the user to launch an instance into.
 
         Reuses the user's server whose launch didn't finish (instance_id still NULL), otherwise

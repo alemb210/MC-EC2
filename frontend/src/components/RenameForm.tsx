@@ -38,7 +38,7 @@ export default function RenameForm({ serverId, name, session, onRenamed, onCance
         <button disabled={busy || !valid}>{busy ? "Saving…" : "Save"}</button>
         <button type="button" className="secondary" disabled={busy} onClick={onCancel}>Cancel</button>
       </div>
-      {!valid && <p className="error">Enter a name.</p>}
+      {!valid && draft.length > 0 && <p className="error">Enter a name.</p>}
       {notice && <p className="muted">{notice}</p>}
       {error && <p className="error">{error}</p>}
     </form>

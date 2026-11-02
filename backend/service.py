@@ -5,7 +5,7 @@ import ec2
 import player_access
 from auth import Principal
 from config import Settings
-from db import DEFAULT_SERVER_NAME, DatabaseUnavailable, OwnedServer, ServerLimitReached, ServerRow
+from db import DatabaseUnavailable, OwnedServer, ServerLimitReached, ServerRow
 from models import (AccessSettings, AccessUpdated, ServerAction, ServerAdmin, ServerCreate, ServerCreated,
                     ServerStatus, ServerSummary, UserResponse)
 
@@ -57,7 +57,8 @@ MOCK_ADMINS = {"demo-server": [ServerAdmin(user_id="00000000-0000-4000-8000-0000
 MOCK_AUTO_STOP_MINUTES = {"demo-shared": 12}
 
 def _mock_name(server_id: str) -> str:
-    return server_id.replace("-", " ").capitalize()
+    # demo-starting has no custom name, so it shows how an unnamed server looks.
+    return server_id if server_id == "demo-starting" else server_id.replace("-", " ").capitalize()
 
 class StatusService:
     def __init__(self, settings: Settings, repository=None):
@@ -101,7 +102,8 @@ class StatusService:
 
     @staticmethod
     def _summary(row: ServerRow) -> ServerSummary:
-        return ServerSummary(server_id=row.id, name=row.name or DEFAULT_SERVER_NAME, role=row.role,
+        # A server without a custom name goes by its ID.
+        return ServerSummary(server_id=row.id, name=row.name or row.id, role=row.role,
                              region=row.region, minecraft_version=row.version,
                              instance_type=row.instance_type, has_instance=row.has_instance)
 
@@ -136,7 +138,7 @@ class StatusService:
         server = self.repository.reserve_server(
             user_id, self.settings.aws_region, MINECRAFT_VERSION,
             self.settings.max_servers_per_user, self.settings.max_servers_total,
-            name=request.name or DEFAULT_SERVER_NAME)
+            name=request.name)
         try:
             # Saved before the launch, so the server's first boot applies it.
             if request.access:
@@ -152,7 +154,7 @@ class StatusService:
             except (ClientError, BotoCoreError) as exc:
                 raise AWSUnavailable from exc
             raise UnknownServer(server.id)
-        return ServerCreated(server_id=server.id, name=server.name or DEFAULT_SERVER_NAME,
+        return ServerCreated(server_id=server.id, name=server.name or server.id,
                              instance_state=launched["state"], region=server.region,
                              minecraft_version=MINECRAFT_VERSION, instance_type=launched["instance_type"])
 

@@ -129,11 +129,62 @@ describe("rename", () => {
     expect(server.sent("PATCH", "/servers/s1")).toHaveLength(1);
   });
 
+  it("works for an admin", async () => {
+    const server = api({ ...statusRoute, "PATCH /servers/s1": { body: summary({ name: "By admin", role: "admin" }) } });
+    card({ role: "admin" });
+    const input = await open();
+    type(input, "By admin");
+    fireEvent.submit(input.closest("form")!);
+    await screen.findByRole("heading", { name: /By admin/ });
+    expect(server.sent("PATCH", "/servers/s1")).toHaveLength(1);
+  });
+
   it("shows a new name that arrives from the list", async () => {
     api(statusRoute);
     const { rerender } = render(<ServerCard serverId="s1" name="Old" role="admin" session={session} />);
     rerender(<ServerCard serverId="s1" name="Changed elsewhere" role="admin" session={session} />);
     expect(await screen.findByRole("heading", { name: /Changed elsewhere/ })).toBeTruthy();
+  });
+});
+
+describe("unnamed servers", () => {
+  const unnamed = { serverId: "abcdef12-0000-4000-8000-000000000001", name: "abcdef12-0000-4000-8000-000000000001" };
+  const route = { [`GET /servers/${unnamed.serverId}/status`]: { body: statusBody({ server_id: unnamed.serverId }) } };
+  const path = `/servers/${unnamed.serverId}`;
+
+  it("shows the ID as the title", async () => {
+    api(route);
+    card(unnamed);
+    await screen.findByText("stopped");
+    expect(within(screen.getByRole("heading")).getByText(unnamed.serverId).tagName).toBe("CODE");
+  });
+
+  it("starts renaming from a blank field, without an error yet", async () => {
+    const server = api({ ...route, [`PATCH ${path}`]: { body: summary({ server_id: unnamed.serverId, name: "Survival" }) } });
+    card(unnamed);
+    await screen.findByText("stopped");
+    fireEvent.click(button("Rename"));
+    const input = screen.getByLabelText("Server name") as HTMLInputElement;
+    expect(input.value).toBe("");
+    expect(screen.queryByText("Enter a name.")).toBeNull();
+    expect(button("Save").disabled).toBe(true);
+    type(input, "Survival");
+    fireEvent.submit(input.closest("form")!);
+    await screen.findByRole("heading", { name: "Survival" });
+    expect(server.sent("PATCH", path)[0].body).toEqual({ name: "Survival" });
+  });
+
+  it("asks for a short part of the ID to confirm deleting", async () => {
+    api({ ...route, [`DELETE ${path}`]: { status: 204 } });
+    card(unnamed);
+    await screen.findByText("stopped");
+    fireEvent.click(button("Delete"));
+    const input = screen.getByLabelText(/to confirm/);
+    type(input, unnamed.serverId);
+    expect(button("Delete forever").disabled).toBe(true);
+    type(input, "abcdef12");
+    fireEvent.click(button("Delete forever"));
+    await waitFor(() => expect(screen.queryByRole("article")).toBeNull());
   });
 });
 
@@ -578,9 +629,64 @@ describe("create form", () => {
                     minecraft_version: "LATEST", instance_type: "t4g.small" };
   const form = (resume = false, onCreated = vi.fn()) => {
     render(<CreateServer session={session} resume={resume} onCreated={onCreated} />);
+    if (!resume) fireEvent.click(button("Create server"));
     return onCreated;
   };
-  const create = () => button("Create server");
+  const create = () => button("Create");
+
+  it("stays closed until asked for", () => {
+    api({});
+    render(<CreateServer session={session} onCreated={vi.fn()} />);
+    expect(button("Create server")).toBeTruthy();
+    expect(screen.queryByText("Who can join?")).toBeNull();
+    expect(screen.queryByLabelText("Server name")).toBeNull();
+  });
+
+  it("opens with the name field ready, and Cancel clears it and closes", () => {
+    const server = api({});
+    form();
+    const name = screen.getByLabelText("Server name") as HTMLInputElement;
+    expect(document.activeElement).toBe(name);
+    type(name, "Friends");
+    fireEvent.click(screen.getByRole("radio", { name: "Public" }));
+    fireEvent.click(button("Cancel"));
+    expect(screen.queryByLabelText("Server name")).toBeNull();
+    fireEvent.click(button("Create server"));
+    expect((screen.getByLabelText("Server name") as HTMLInputElement).value).toBe("");
+    expect(create().disabled).toBe(true);
+    expect(server.calls).toEqual([]);
+  });
+
+  it("closes with Escape", () => {
+    api({});
+    form();
+    fireEvent.keyDown(screen.getByLabelText("Server name"), { key: "Escape" });
+    expect(screen.queryByLabelText("Server name")).toBeNull();
+  });
+
+  it("can't be cancelled while creating", async () => {
+    let release = () => {};
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    api({ "POST /servers": { status: 201, body: created, hold } });
+    form();
+    fireEvent.click(screen.getByRole("radio", { name: "Public" }));
+    fireEvent.click(create());
+    await waitFor(() => expect(button("Cancel").disabled).toBe(true));
+    fireEvent.keyDown(screen.getByLabelText("Server name"), { key: "Escape" });
+    expect(screen.getByLabelText("Server name")).toBeTruthy();
+    release();
+    await screen.findByText(/Server launched/);
+  });
+
+  it("clears an old message when reopened", async () => {
+    api({ "POST /servers": { status: 201, body: created } });
+    form();
+    fireEvent.click(screen.getByRole("radio", { name: "Public" }));
+    fireEvent.click(create());
+    await screen.findByText(/Server launched/);
+    fireEvent.click(button("Create server"));
+    expect(screen.queryByText(/Server launched/)).toBeNull();
+  });
 
   it("needs an access choice first", () => {
     api({});
@@ -603,11 +709,14 @@ describe("create form", () => {
     await screen.findByText(/Server launched/);
     expect(server.calls[0].body).toEqual({ name: "Friends", access: { mode: "whitelist", players: ["Steve", "Alex"] } });
     expect(onCreated).toHaveBeenCalledOnce();
+    // The form closes, and opening it again starts fresh.
+    expect(screen.queryByLabelText("Server name")).toBeNull();
+    fireEvent.click(button("Create server"));
     expect((screen.getByLabelText("Server name") as HTMLInputElement).value).toBe("");
     expect(create().disabled).toBe(true);
   });
 
-  it("uses the default name for a blank one, and keeps names typed before choosing public", async () => {
+  it("sends no name for a blank one, so the server goes by its ID, and keeps names typed before choosing public", async () => {
     const server = api({ "POST /servers": { status: 201, body: created } });
     form();
     type(screen.getByLabelText("Server name"), "    ");

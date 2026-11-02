@@ -16,12 +16,32 @@ export default function CreateServer({ session, onCreated, resume = false }: {
   const [name, setName] = useState("");
   const [mode, setMode] = useState<AccessMode | null>(null);
   const [players, setPlayers] = useState("");
+  const [open, setOpen] = useState(false);
   const sessionRef = useRef(session);
   sessionRef.current = session;
 
   const problem = mode === "whitelist" ? playersProblem(parsePlayers(players)) : null;
   // Resuming keeps the name and access saved by the first attempt, so it doesn't ask again.
   const ready = resume || (mode !== null && !problem);
+
+  const clearForm = () => {
+    setName("");
+    setMode(null);
+    setPlayers("");
+  };
+
+  const onOpen = () => {
+    setNotice(null);
+    setError(null);
+    setOpen(true);
+  };
+
+  const onCancel = () => {
+    if (busy) return;
+    clearForm();
+    setError(null);
+    setOpen(false);
+  };
 
   const onCreate = async (e: FormEvent) => {
     e.preventDefault();
@@ -36,9 +56,8 @@ export default function CreateServer({ session, onCreated, resume = false }: {
         onWaking: () => setNotice("Waking up the database…"),
       });
       onCreated(server);
-      setName("");
-      setMode(null);
-      setPlayers("");
+      clearForm();
+      setOpen(false);
       setNotice("Server launched. First boot installs Minecraft and takes a few minutes.");
     } catch (err) {
       setNotice(null);
@@ -49,21 +68,30 @@ export default function CreateServer({ session, onCreated, resume = false }: {
   };
 
   return (
-    <form className="create" onSubmit={onCreate}>
-      {!resume && (
-        <>
+    <section className="create">
+      {resume && (
+        <form onSubmit={onCreate}>
+          <button disabled={busy}>{busy ? "Creating…" : "Resume creation"}</button>
+        </form>
+      )}
+      {!resume && !open && <button onClick={onOpen}>Create server</button>}
+      {!resume && open && (
+        <form className="create-form" onSubmit={onCreate} onKeyDown={(e) => { if (e.key === "Escape") onCancel(); }}>
           <label className="field">
             Server name
-            <input value={name} maxLength={MAX_NAME_LENGTH} placeholder="Minecraft server" disabled={busy}
-                   onChange={(e) => setName(e.target.value)} />
+            <input value={name} maxLength={MAX_NAME_LENGTH} placeholder="Leave blank to use the server ID" autoFocus
+                   disabled={busy} onChange={(e) => setName(e.target.value)} />
           </label>
           <AccessFields mode={mode} players={players} disabled={busy} onMode={setMode} onPlayers={setPlayers} />
-        </>
+          <div className="actions">
+            <button disabled={busy || !ready}>{busy ? "Creating…" : "Create"}</button>
+            <button type="button" className="secondary" disabled={busy} onClick={onCancel}>Cancel</button>
+          </div>
+          {mode === null && <p className="muted">Choose who can join to continue.</p>}
+        </form>
       )}
-      <button disabled={busy || !ready}>{busy ? "Creating…" : resume ? "Resume creation" : "Create server"}</button>
-      {!resume && mode === null && <p className="muted">Choose who can join to continue.</p>}
       {notice && <p className="muted">{notice}</p>}
       {error && <p className="error">{error}</p>}
-    </form>
+    </section>
   );
 }

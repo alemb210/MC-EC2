@@ -58,6 +58,8 @@ export default function ServerCard({ serverId, name, role, showId = false, sessi
   const awaitingInstance = status?.provisioning_state === "awaiting_instance";
   const address = status?.connection_address ?? null;
   const displayName = renamed ?? name;
+  // The API sends a server's ID as its name until it's given a custom one.
+  const unnamed = displayName === undefined || displayName === serverId;
   const online = status?.players_online ?? 0;
   const autoStop = status && autoStopLabel(status);
 
@@ -107,7 +109,7 @@ export default function ServerCard({ serverId, name, role, showId = false, sessi
     <article className="card">
       <header className="card-head">
         <h2>
-          {displayName ?? <code>{serverId}</code>}
+          {unnamed ? <code>{serverId}</code> : displayName}
           {showId && <code className="server-id"> {serverId.slice(0, 8)}</code>}
           {role === "admin" && <span className="shared">Admin</span>}
         </h2>
@@ -115,7 +117,7 @@ export default function ServerCard({ serverId, name, role, showId = false, sessi
       </header>
 
       {renaming && displayName !== undefined && (
-        <RenameForm serverId={serverId} name={displayName} session={session} onGone={onChanged}
+        <RenameForm serverId={serverId} name={unnamed ? "" : displayName} session={session} onGone={onChanged}
                     onCancel={() => setRenaming(false)}
                     onRenamed={(next) => { setRenamed(next); setRenaming(false); onChanged?.(); }} />
       )}
@@ -155,7 +157,7 @@ export default function ServerCard({ serverId, name, role, showId = false, sessi
       {accessOpened && <AccessEditor serverId={serverId} session={session} visible={panel === "access"} onGone={onChanged} />}
       {panel === "admins" && <AdminsPanel serverId={serverId} session={session} onGone={onChanged} />}
       {panel === "delete" && displayName !== undefined && (
-        <DeleteConfirm serverId={serverId} name={displayName} playersOnline={online} session={session}
+        <DeleteConfirm serverId={serverId} name={unnamed ? serverId.slice(0, 8) : displayName} playersOnline={online} session={session}
                        onDeleted={onRemoved} onCancel={() => setPanel(null)} />
       )}
 

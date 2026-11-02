@@ -37,6 +37,7 @@ class UserResponse(BaseModel):
 
 class ServerSummary(BaseModel):
     server_id: str
+    # The custom name, or the server's ID if it doesn't have one.
     name: str
     # Whether the caller owns this server or was added to it as an admin.
     role: Role
