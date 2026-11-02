@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>MCWorldControl - Your world. On your schedule.</title>
+  <link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <div class="review-bar" aria-label="Mockup navigation">
+    <div class="review-label"><span class="review-dot"></span> DESIGN PREVIEW <span class="review-version">/ 01</span></div>
+    <nav class="view-switcher" aria-label="Preview screens">
+      <button data-view="landing" aria-current="page">Landing</button>
+      <button data-view="dashboard">Dashboard</button>
+      <button data-view="login">Cognito</button>
+    </nav>
+    <span class="review-disclaimer">Interactive mockup <span>· sample data</span></span>
+  </div>
+  <div id="app"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <dialog id="manage-dialog" class="drawer" aria-labelledby="manage-title">
+    <div class="drawer-top"><div><div class="eyebrow">SERVER SETTINGS</div><h2 id="manage-title">Sunday survival</h2></div><button class="icon-button" data-close="manage-dialog" aria-label="Close settings"><span data-icon="close"></span></button></div>
+    <div id="manage-role" class="drawer-role"></div>
+    <nav class="settings-tabs" aria-label="Server settings">
+      <button data-setting="general" aria-current="page">General</button>
+      <button data-setting="access">Player access</button>
+      <button data-setting="admins">Admins</button>
+    </nav>
+    <div id="settings-content" class="settings-content"></div>
+    <div class="drawer-bottom"><span data-icon="shield"></span> Settings apply to this server only.</div>
+  </dialog>
+
+  <dialog id="create-dialog" class="modal" aria-labelledby="create-title">
+    <div class="modal-header"><div><div class="eyebrow">A PLACE FOR YOUR GROUP</div><h2 id="create-title">Create a server</h2></div><button class="icon-button" data-close="create-dialog" aria-label="Close create server"><span data-icon="close"></span></button></div>
+    <form id="create-form">
+      <label class="field">Server name <span class="optional">Optional</span><input name="serverName" maxlength="80" placeholder="e.g. Sunday survival"></label>
+      <fieldset><legend>Who can join?</legend><label class="radio-card"><input type="radio" name="access" value="whitelist" checked><span><strong>Selected players</strong><small>Only Minecraft usernames on your allowlist.</small></span><span data-icon="lock"></span></label><label class="radio-card"><input type="radio" name="access" value="public"><span><strong>Anyone with the address</strong><small>Public access to your Minecraft server.</small></span><span data-icon="globe"></span></label></fieldset>
+      <label class="field" id="create-players">Minecraft usernames<textarea name="players" rows="2" placeholder="Steve, Alex"></textarea><small>Separate usernames with commas or new lines. An empty list lets nobody join.</small></label>
+      <p class="info-box"><span data-icon="clock"></span> Creation starts your server. First startup takes a few minutes.</p>
+      <div class="modal-actions"><button type="button" class="button secondary" data-close="create-dialog">Cancel</button><button class="button primary" type="submit">Create server <span data-icon="plus"></span></button></div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="modal" aria-labelledby="confirm-title"><div id="confirm-content"></div></dialog>
+  <div class="svg-library" aria-hidden="true" id="svg-library"></div>
+  <script type="application/json" data-lavish-revisions>
+    [{"id":"r1","label":"Review 1","timestamp":"2026-11-02","summary":"Renamed the product to MCWorldControl and clarified signed-in landing actions."}]
+  </script>
+  <script src="mockup.js"></script>
+</body>
+</html>
