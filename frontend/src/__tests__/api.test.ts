@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  ApiError, createServer, describeError, getStatus, listServers, startServer, statusFromAction, stopServer,
+  addAdmin, ApiError, createServer, deleteServer, describeError, getAccess, getStatus, listAdmins, listServers,
+  removeAdmin, renameServer, startServer, statusFromAction, stopServer, updateAccess, type AccessSettings,
 } from "../api";
 
 function stubFetch(status: number, body: unknown, headers: Record<string, string> = {}) {
@@ -81,7 +82,7 @@ describe("start and stop", () => {
     expect(statusFromAction({ server_id: "s1", instance_state: "stopping" })).toEqual({
       server_id: "s1", instance_state: "stopping", minecraft_ready: false,
       provisioning_state: "instance_assigned",
-      connection_address: null, players_online: null, players_max: null, minecraft_version: null,
+      connection_address: null, players_online: null, players_max: null, minecraft_version: null, auto_stop_at: null,
     });
   });
 });
@@ -111,5 +112,59 @@ describe("listServers", () => {
     await expect(listServers("tok")).resolves.toEqual(servers);
     expect(fetchMock.mock.calls[0][0]).toBe("/servers");
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "GET", headers: { Authorization: "Bearer tok" } });
+  });
+});
+
+describe("new server routes", () => {
+  it("sends JSON bodies with the right method and path", async () => {
+    const fetchMock = stubFetch(200, {});
+    const settings: AccessSettings = { mode: "whitelist", players: ["Steve"] };
+    await renameServer("s1", "Survival", "tok");
+    await updateAccess("s1", settings, "tok");
+    await addAdmin("s1", "friend@example.com", "tok");
+    await createServer("tok", { name: "Survival", access: settings });
+    const calls = fetchMock.mock.calls.map(([path, init]) => [path, init.method, init.body]);
+    expect(calls).toEqual([
+      ["/servers/s1", "PATCH", JSON.stringify({ name: "Survival" })],
+      ["/servers/s1/access", "PUT", JSON.stringify(settings)],
+      ["/servers/s1/admins", "POST", JSON.stringify({ email: "friend@example.com" })],
+      ["/servers", "POST", JSON.stringify({ name: "Survival", access: settings })],
+    ]);
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({
+      Authorization: "Bearer tok", "Content-Type": "application/json",
+    });
+  });
+
+  it("creates with no body when given no options, as before", async () => {
+    const fetchMock = stubFetch(200, {});
+    await createServer("tok");
+    expect(fetchMock.mock.calls[0][1].body).toBeUndefined();
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({ Authorization: "Bearer tok" });
+  });
+
+  it("reads without a body", async () => {
+    const fetchMock = stubFetch(200, []);
+    await getAccess("s1", "tok");
+    await listAdmins("s1", "tok");
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual(["/servers/s1/access", "/servers/s1/admins"]);
+  });
+
+  it("handles an empty 204 response", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(deleteServer("s1", "tok")).resolves.toEqual({});
+    await expect(removeAdmin("s1", "me", "tok")).resolves.toEqual({});
+    expect(fetchMock.mock.calls[0][1].method).toBe("DELETE");
+    expect(fetchMock.mock.calls[1][0]).toBe("/servers/s1/admins/me");
+  });
+
+  it("turns FastAPI field errors into a readable message", async () => {
+    stubFetch(422, { detail: [{ loc: ["body", "name"], msg: "too long" }] });
+    const err = await renameServer("s1", "x", "tok").catch((e) => e);
+    expect(err.detail).toBe("Some of the values you entered aren't valid.");
+  });
+
+  it("explains a 403", () => {
+    expect(describeError(new ApiError(403, "x", 15, false))).toBe("Only the server's owner can do this.");
   });
 });

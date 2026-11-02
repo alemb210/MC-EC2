@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  describeError, getStatus, startServer, statusFromAction, stopServer, type ServerStatus,
+  describeError, getStatus, isServerGone, startServer, statusFromAction, stopServer, type ServerStatus,
 } from "../api";
 import { withRecovery, type AuthSession } from "../recovery";
 
 const POLL_MS = 5000;
+// A ready server isn't settling, but its player count and auto-stop time still change.
+const RUNNING_POLL_MS = 60000;
 
 // Keep polling while AWS or Minecraft is still transitioning.
 export function isSettling(s: ServerStatus): boolean {
@@ -13,7 +15,13 @@ export function isSettling(s: ServerStatus): boolean {
     (s.instance_state === "running" && !s.minecraft_ready);
 }
 
-export function useServerStatus(serverId: string, session: AuthSession | null) {
+export function pollDelay(s: ServerStatus): number | null {
+  if (isSettling(s)) return POLL_MS;
+  return s.instance_state === "running" ? RUNNING_POLL_MS : null;
+}
+
+// onGone: the server no longer exists for this user (deleted, or they were removed as an admin).
+export function useServerStatus(serverId: string, session: AuthSession | null, onGone?: () => void) {
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -25,6 +33,8 @@ export function useServerStatus(serverId: string, session: AuthSession | null) {
   // The session object is rebuilt every render; keep the newest one without re-running effects.
   const sessionRef = useRef(session);
   sessionRef.current = session;
+  const onGoneRef = useRef(onGone);
+  onGoneRef.current = onGone;
 
   const run = useCallback(async (call: (token?: string) => Promise<ServerStatus>) => {
     const seq = ++latest.current;
@@ -37,7 +47,10 @@ export function useServerStatus(serverId: string, session: AuthSession | null) {
         setError(null);
       }
     } catch (e) {
-      if (seq === latest.current) setError(describeError(e));
+      if (seq === latest.current) {
+        setError(describeError(e));
+        if (isServerGone(e)) onGoneRef.current?.();
+      }
     } finally {
       if (seq === latest.current) {
         setNotice(null);
@@ -61,10 +74,20 @@ export function useServerStatus(serverId: string, session: AuthSession | null) {
   }, [refresh]);
 
   useEffect(() => {
-    if (busy || !status || !isSettling(status)) return;
-    const timer = setTimeout(refresh, POLL_MS);
+    const delay = status && pollDelay(status);
+    if (busy || !delay) return;
+    // A forgotten background tab shouldn't keep the database awake just to update a countdown.
+    if (delay === RUNNING_POLL_MS && document.hidden) return;
+    const timer = setTimeout(refresh, delay);
     return () => clearTimeout(timer);
   }, [status, refresh, busy, completedRequests]);
+
+  // Coming back to the tab: catch up right away, which also restarts polling.
+  useEffect(() => {
+    const onVisible = () => { if (!document.hidden) void refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [refresh]);
 
   return { status, error, notice, busy, refresh, start: () => act("start"), stop: () => act("stop") };
 }

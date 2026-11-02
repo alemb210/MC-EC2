@@ -1,16 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, type InstanceState, type ServerStatus } from "../api";
-import { isSettling } from "../hooks/useServerStatus";
+import { isSettling, pollDelay } from "../hooks/useServerStatus";
 import { withRecovery, type AuthSession } from "../recovery";
+import { accessPayload, accessWarning, parsePlayers, playersProblem } from "../access";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as statusHook from "../hooks/useServerStatus";
-import ServerCard from "../components/ServerCard";
+import ServerCard, { autoStopLabel } from "../components/ServerCard";
 
 const status = (instance_state: InstanceState | null, minecraft_ready = false): ServerStatus => ({
   server_id: "s1", instance_state, minecraft_ready, connection_address: null,
   provisioning_state: instance_state === null ? "awaiting_instance" : "instance_assigned",
-  players_online: null, players_max: null, minecraft_version: null,
+  players_online: null, players_max: null, minecraft_version: null, auto_stop_at: null,
 });
 
 describe("isSettling", () => {
@@ -97,3 +98,65 @@ describe("withRecovery", () => {
   });
 });
 
+
+describe("polling", () => {
+  it.each([
+    ["pending", false, 5000],
+    ["running", false, 5000],
+    ["running", true, 60000],
+    ["stopped", false, null],
+    ["terminated", false, null],
+  ] as const)("a %s server (ready=%s) polls every %s ms", (state, ready, delay) => {
+    expect(pollDelay(status(state, ready))).toBe(delay);
+  });
+});
+
+describe("auto-stop label", () => {
+  const at = (iso: string | null, state: InstanceState = "running") => ({ ...status(state, true), auto_stop_at: iso });
+  const now = Date.parse("2026-11-01T12:00:00Z");
+
+  it("counts down in whole minutes", () => {
+    expect(autoStopLabel(at("2026-11-01T12:11:30Z"), now)).toBe("Stops in 12 min if nobody joins");
+  });
+  it("handles a time that has just passed", () => {
+    expect(autoStopLabel(at("2026-11-01T11:59:00Z"), now)).toBe("Stopping soon because nobody is playing");
+  });
+  it("shows nothing while players are online", () => expect(autoStopLabel(at(null), now)).toBeNull());
+  it("ignores a time it can't read", () => expect(autoStopLabel(at("soon"), now)).toBeNull());
+  it("shows nothing once the server is stopping", () => {
+    expect(autoStopLabel(at("2026-11-01T12:11:30Z", "stopping"), now)).toBeNull();
+  });
+});
+
+describe("player names", () => {
+  it.each([
+    ["Steve, Alex", ["Steve", "Alex"]],
+    ["Steve\nAlex\n", ["Steve", "Alex"]],
+    ["  Steve;Alex   Sam ", ["Steve", "Alex", "Sam"]],
+    ["Steve steve STEVE", ["Steve"]],
+    ["", []],
+    [" , \n;", []],
+  ])("parses %j", (text, expected) => expect(parsePlayers(text)).toEqual(expected));
+
+  it("names the invalid entries", () => {
+    expect(playersProblem(["Steve"])).toBeNull();
+    expect(playersProblem(["ab", "Steve", "a@b.com"])).toContain("ab, a@b.com");
+  });
+
+  it("limits the list", () => {
+    const names = Array.from({ length: 101 }, (_, i) => `player${i}`);
+    expect(playersProblem(names)).toContain("up to 100");
+    expect(playersProblem(names.slice(0, 100))).toBeNull();
+  });
+
+  it("warns about an empty whitelist and a public server", () => {
+    expect(accessWarning("whitelist", [])).toContain("Nobody can join");
+    expect(accessWarning("whitelist", ["Steve"])).toBeNull();
+    expect(accessWarning("public", [])).toContain("Anyone");
+  });
+
+  it("doesn't let a mistake in a hidden field block switching to public", () => {
+    expect(accessPayload("public", "Steve a;b")).toEqual({ mode: "public", players: ["Steve"] });
+    expect(accessPayload("whitelist", "Steve x@y")).toEqual({ mode: "whitelist", players: ["Steve", "x@y"] });
+  });
+});

@@ -96,11 +96,17 @@ Restart after configuration changes.
 
 ## Frontend
 
-The dashboard in `frontend/` (React, Vite, TypeScript) lists the user's servers from `GET /servers`,
-has a Create server button, and shows a card per server with its state,
-Minecraft readiness, address, players and version, plus Start, Stop, Refresh and Copy address.
-Cards poll every 5 s while a server is changing state. `/health` decides the mode: in mock mode
-there is no login and the three demo servers appear; in live mode the user logs in through
+The dashboard in `frontend/` (React, Vite, TypeScript) lists the servers a user owns or administers
+from `GET /servers`. A form creates a server with a name and a public or whitelist choice. Each card
+shows state, Minecraft readiness, address, players and version, an auto-stop countdown when the server is
+empty, and Start, Stop, Refresh and Copy address. Owners and admins can rename a server and edit who can
+join, even while it's stopped. Owners can also manage admins and delete the server; admins can leave.
+A card disappears if its server is deleted or the user is removed from it.
+
+Cards poll every 5 s while a server is changing state, and every 60 s while it's running in a visible
+tab, so a background tab doesn't keep the database awake. `/health` decides the mode: in mock mode
+there is no login and the demo servers appear (changes aren't saved, and the create form needs a login,
+so it's hidden); in live mode the user logs in through
 Cognito's hosted page (authorization code + PKCE) and the app sends the access token on every
 `/servers/...` call. A 401 renews the token once, then falls back to the login screen. A 503 with
 `Retry-After` (the database waking up) is retried up to 3 times.
@@ -260,7 +266,8 @@ errors and auto-pause, start/stop transitions and conflicts, region handling, re
 limits, launch retries, and EC2 lifecycle and launching against moto. It also covers the permissions of every
 server route for owner, admin and stranger, auto-stop (including that it never loads the database layer), and
 `user_data.sh` with its sync script run against stub `docker` and `aws` commands. The frontend has Vitest tests
-for the API client, token renewal and retry logic: `cd frontend && npm test`.
+for the API client, token renewal and retry logic, plus DOM tests that drive the components through corner cases such as double submits, failed
+loads, and servers that disappear mid-action: `cd frontend && npm test`.
 
 ## Deployment
 
@@ -274,7 +281,6 @@ See [infra/README.md](infra/README.md). In short: `cd infra && ./build_lambda.sh
 - `VERSION=LATEST` can upgrade a world whenever its container restarts; versions aren't pinned yet.
 - Any signed-in user with a server can test whether an email has an account by adding it as an admin.
 - No operation locks, runtime history, or cost reporting yet.
-- The dashboard doesn't use the new routes yet; see [docs/frontend-handoff](docs/frontend-handoff/README.md).
 
 ## Progress log
 
