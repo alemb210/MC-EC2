@@ -16,7 +16,9 @@ The backend runs on AWS Lambda behind API Gateway; all AWS resources are managed
 | GET | /servers | token | Registers the caller if needed, then lists servers they own or administer, oldest first (`[]` for a new user), with `name` and `role`; never includes EC2 instance IDs |
 | POST | /servers | token | 201: launches a new server from the Minecraft launch template (registers the caller if needed). Optional body: `{name, access}` |
 | PATCH | /servers/{server_id} | token + owner or admin | Renames the server |
-| DELETE | /servers/{server_id} | token + owner | 204: terminates the instance and deletes the server and its world; safe to retry |
+| DELETE | /servers/{server_id} | token + owner | 204: terminates the instance and deletes the server, its world and its backups; safe to retry |
+| GET | /servers/{server_id}/backups | token + owner or admin | World backups, newest first |
+| POST | /servers/{server_id}/backups/{backup_id}/restore | token + owner | 202: saves the current world, then restores the backup over the next few job runs; the server must be stopped |
 | GET | /servers/{server_id}/status | token + owner or admin | EC2 state, Minecraft readiness, current address, player count and version (null until ready), `auto_stop_at` |
 | POST | /servers/{server_id}/start | token + owner or admin | 202, new state (`pending`, or the current state if already running) |
 | POST | /servers/{server_id}/stop | token + owner or admin | 202, new state (`stopping`, or the current state if already stopped) |
@@ -278,7 +280,8 @@ See [infra/README.md](infra/README.md). In short: `cd infra && ./build_lambda.sh
 
 - Self-signup is open; `max_servers_total` and the AWS budget are what limit cost. Cognito's default
   email sender allows about 50 confirmation emails a day.
-- No world backups yet, so deleting a server is permanent.
+- Deleting a server is permanent and also deletes its backups.
+- Backups can't be downloaded, and a very long session isn't backed up until the server stops.
 - `VERSION=LATEST` can upgrade a world whenever its container restarts; versions aren't pinned yet.
 - Any signed-in user with a server can test whether an email has an account by adding it as an admin.
 - No operation locks, runtime history, or cost reporting yet.

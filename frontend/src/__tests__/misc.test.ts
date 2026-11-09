@@ -11,6 +11,7 @@ import ServerCard, { autoStopLabel } from "../components/ServerCard";
 const status = (instance_state: InstanceState | null, minecraft_ready = false): ServerStatus => ({
   server_id: "s1", instance_state, minecraft_ready, connection_address: null,
   provisioning_state: instance_state === null ? "awaiting_instance" : "instance_assigned",
+  restoring: false, restore_failed: false,
   players_online: null, players_max: null, minecraft_version: null, auto_stop_at: null,
 });
 

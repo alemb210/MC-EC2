@@ -13,6 +13,10 @@ export interface ServerStatus {
   minecraft_version: string | null;
   // When auto-stop will stop this server if it stays empty; null while players are online.
   auto_stop_at: string | null;
+  // A backup is being restored; start, stop and delete wait until it finishes.
+  restoring: boolean;
+  // The most recent restore didn't finish.
+  restore_failed: boolean;
 }
 
 // Start and stop only report the new EC2 state; the next status call fills in the rest.
@@ -66,6 +70,20 @@ export interface CreateServerRequest {
 export interface ServerAdmin {
   user_id: string;
   email: string;
+}
+
+export interface Backup {
+  backup_id: string;
+  created_at: string;
+  // session: taken after people played. pre-restore: the world as it was just before a restore.
+  kind: "session" | "pre-restore";
+  // Only a completed backup can be restored.
+  state: "pending" | "completed";
+}
+
+export interface RestoreStarted {
+  server_id: string;
+  backup_id: string;
 }
 
 export interface Health {
@@ -140,6 +158,10 @@ export const addAdmin = (id: string, email: string, token?: string) =>
 // userId is "me" when an admin leaves the server.
 export const removeAdmin = (id: string, userId: string, token?: string) =>
   request<void>("DELETE", `${server(id)}/admins/${encodeURIComponent(userId)}`, token);
+export const listBackups = (id: string, token?: string) =>
+  request<Backup[]>("GET", `${server(id)}/backups`, token);
+export const restoreBackup = (id: string, backupId: string, token?: string) =>
+  request<RestoreStarted>("POST", `${server(id)}/backups/${encodeURIComponent(backupId)}/restore`, token);
 
 // The API's 404 for a server that's gone or that the caller can't access, as opposed to its
 // other 404s (no user with that email, not an admin).
@@ -158,6 +180,8 @@ export function statusFromAction(a: ServerAction): ServerStatus {
     players_max: null,
     minecraft_version: null,
     auto_stop_at: null,
+    restoring: false,
+    restore_failed: false,
   };
 }
 

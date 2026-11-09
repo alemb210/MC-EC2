@@ -44,7 +44,9 @@ def test_status_running(instance_id):
 
 def test_stop_then_start(instance_id):
     assert ec2.stop(instance_id) == "stopping"
-    assert ec2.status(instance_id) == {"state": "stopped", "ip": None, "idle_since": None, "minecraft": None}
+    assert ec2.status(instance_id) == {
+        "state": "stopped", "ip": None, "idle_since": None, "minecraft": None, "restoring": False,
+        "restore_failed": False, "volume_id": ec2.status(instance_id)["volume_id"]}
     assert ec2.start(instance_id) == "pending"
 
 

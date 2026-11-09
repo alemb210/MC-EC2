@@ -5,10 +5,11 @@ import { ApiError, removeAdmin, type Role, type ServerStatus } from "../api";
 import type { AuthSession } from "../recovery";
 import AccessEditor from "./AccessEditor";
 import AdminsPanel from "./AdminsPanel";
+import BackupsPanel from "./BackupsPanel";
 import DeleteConfirm from "./DeleteConfirm";
 import RenameForm from "./RenameForm";
 
-type Panel = "general" | "access" | "admins" | "delete";
+type Panel = "general" | "access" | "backups" | "admins" | "delete";
 
 function minecraftLabel(s: ServerStatus): string {
   if (s.minecraft_ready) return "Ready";
@@ -17,6 +18,7 @@ function minecraftLabel(s: ServerStatus): string {
 
 function serverStateLabel(s: ServerStatus | null): string {
   if (!s) return "Loading…";
+  if (s.restoring) return "Restoring backup";
   if (s.provisioning_state === "awaiting_instance") return "Awaiting instance";
   switch (s.instance_state) {
     case "running": return s.minecraft_ready ? "Ready to join" : "Starting Minecraft";
@@ -87,6 +89,7 @@ export default function ServerCard({ serverId, name, role, version, showId = fal
   // The API sends a server's ID as its name until it's given a custom one.
   const unnamed = displayName === undefined || displayName === serverId;
   const online = status?.players_online ?? 0;
+  const restoring = status?.restoring ?? false;
   const autoStop = status && autoStopLabel(status);
 
   // The list reload removes this card, but it can fail or take a moment, so don't leave a dead card behind.
@@ -169,7 +172,7 @@ export default function ServerCard({ serverId, name, role, version, showId = fal
       )}
 
       <div className="actions card-actions">
-        {state === "running" ? <button onClick={onStop} disabled={busy || !status?.minecraft_ready}>Stop</button> : <button onClick={start} disabled={busy || state !== "stopped"}>Start</button>}
+        {state === "running" ? <button onClick={onStop} disabled={busy || restoring || !status?.minecraft_ready}>Stop</button> : <button onClick={start} disabled={busy || restoring || state !== "stopped"}>Start</button>}
         {role && <button className="secondary" ref={triggerRef} aria-haspopup="dialog" aria-expanded={settingsOpen} onClick={() => { setPanel("general"); setSettingsOpen(true); }}>Manage</button>}
         <button className="secondary" onClick={refresh} disabled={busy}>Refresh</button>
       </div>
@@ -190,6 +193,7 @@ export default function ServerCard({ serverId, name, role, version, showId = fal
             <nav className="settings-tabs" aria-label="Server settings">
               <button aria-current={panel === "general" ? "page" : undefined} onClick={() => togglePanel("general")}>General</button>
               <button aria-current={panel === "access" ? "page" : undefined} onClick={() => togglePanel("access")}>Player access</button>
+              <button aria-current={panel === "backups" ? "page" : undefined} onClick={() => togglePanel("backups")}>Backups</button>
               {role === "owner" && <button aria-current={panel === "admins" ? "page" : undefined} onClick={() => togglePanel("admins")}>Admins</button>}
             </nav>
             <div className="settings-content">
@@ -206,7 +210,7 @@ export default function ServerCard({ serverId, name, role, version, showId = fal
                     <dt>Minecraft</dt><dd>{status?.minecraft_version ?? version ?? "—"}</dd></dl>
                   <div className="danger-zone">
                     <h3>{role === "owner" ? "Delete server" : "Leave this server"}</h3>
-                    <p>{role === "owner" ? "Permanently delete this server and its world. This cannot be undone." : "Remove yourself as an admin and lose access to its controls."}</p>
+                    <p>{role === "owner" ? "Permanently delete this server, its world, and its backups. This cannot be undone." : "Remove yourself as an admin and lose access to its controls."}</p>
                     {role === "owner" ? <button className="danger" onClick={() => togglePanel("delete")}>Delete</button>
                       : <button className="danger" disabled={leave.busy} onClick={onLeave}>{leave.busy ? "Leaving…" : "Leave"}</button>}
                   </div>
@@ -217,6 +221,12 @@ export default function ServerCard({ serverId, name, role, version, showId = fal
                 <p>Player access controls who joins in Minecraft. It does not grant server control.</p>
                 <AccessEditor serverId={serverId} session={session} visible={settingsOpen && panel === "access"} onGone={onChanged} />
               </div>}
+              {panel === "backups" && role && <>
+                <h3>Go back in time.</h3>
+                <p>A backup is saved after each session once the server stops. The last seven are kept.</p>
+                <BackupsPanel serverId={serverId} role={role} status={status} session={session}
+                              onRestoring={refresh} onGone={onChanged} />
+              </>}
               {panel === "admins" && role === "owner" && <>
                 <h3>Share the controls.</h3>
                 <p>Admins can start, stop, rename, and manage player access. Only the owner can manage admins or delete.</p>

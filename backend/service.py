@@ -6,10 +6,13 @@ import player_access
 from auth import Principal
 from config import Settings
 from db import DatabaseUnavailable, OwnedServer, ServerLimitReached, ServerRow
-from models import (AccessSettings, AccessUpdated, ServerAction, ServerAdmin, ServerCreate, ServerCreated,
-                    ServerStatus, ServerSummary, UserResponse)
+from models import (AccessSettings, AccessUpdated, Backup, RestoreStarted, ServerAction, ServerAdmin, ServerCreate,
+                    ServerCreated, ServerStatus, ServerSummary, UserResponse)
 
 class UnknownServer(Exception):
+    pass
+
+class UnknownBackup(Exception):
     pass
 
 class UnknownUser(Exception):
@@ -55,6 +58,7 @@ MOCK_ROLES = {"demo-shared": "admin"}
 MOCK_ACCESS = {"demo-server": {"mode": "whitelist", "players": ["Steve", "Alex"]}}
 MOCK_ADMINS = {"demo-server": [ServerAdmin(user_id="00000000-0000-4000-8000-000000000001", email="friend@example.com")]}
 MOCK_AUTO_STOP_MINUTES = {"demo-shared": 12}
+MOCK_BACKUP_ID = "snap-0123456789abcdef0"
 
 def _mock_name(server_id: str) -> str:
     # demo-starting has no custom name, so it shows how an unnamed server looks.
@@ -183,15 +187,63 @@ class StatusService:
         # order could leave an instance running and billing with nothing tracking it.
         try:
             # By tag too, because a launch can succeed before its instance ID is recorded.
-            instance_ids = {i["InstanceId"] for i in ec2.find_instances(server.id, region=server.region)}
+            instances = ec2.find_instances(server.id, region=server.region)
+            if any(t["Key"] == ec2.RESTORE_TO_TAG for i in instances for t in i.get("Tags", [])):
+                raise InvalidServerState("A backup is being restored. Try again when it finishes.")
+            instance_ids = {i["InstanceId"] for i in instances}
             if server.instance_id:
                 instance_ids.add(server.instance_id)
             for instance_id in sorted(instance_ids):
                 ec2.terminate(instance_id, region=server.region)
+            # After terminating, so the backup job can't start another one behind this list.
+            for backup in ec2.list_backups(server.id, region=server.region):
+                ec2.delete_backup(backup["snapshot_id"], region=server.region)
             player_access.delete(server.id, server.region)
         except (ClientError, BotoCoreError) as exc:
             raise AWSUnavailable from exc
         self.repository.delete_server(server.id)
+
+    def list_backups(self, server_id: str, principal: Principal) -> list[Backup]:
+        if self.settings.mock_mode:
+            self._mock_server(server_id)
+            return [Backup(backup_id=MOCK_BACKUP_ID, created_at=datetime.now(timezone.utc) - timedelta(days=1),
+                           kind="session", state="completed")]
+        server = self._accessible_server(principal, server_id)
+        try:
+            backups = ec2.list_backups(server.id, region=server.region)
+        except (ClientError, BotoCoreError) as exc:
+            raise AWSUnavailable(AWS_ERROR) from exc
+        return [Backup(backup_id=b["snapshot_id"], created_at=b["started_at"], kind=b["kind"], state=b["state"])
+                for b in sorted(backups, key=lambda b: b["started_at"], reverse=True)
+                if b["state"] in ("pending", "completed") and b["kind"] in (ec2.SESSION_BACKUP, ec2.PRE_RESTORE_BACKUP)]
+
+    def restore_backup(self, server_id: str, backup_id: str, principal: Principal) -> RestoreStarted:
+        if self.settings.mock_mode:
+            self._mock_server(server_id, owner_only=True)
+            if backup_id != MOCK_BACKUP_ID:
+                raise UnknownBackup(backup_id)
+            return RestoreStarted(server_id=server_id, backup_id=backup_id)
+        server = self._owned_server(principal, server_id)
+        if server.instance_id is None:
+            raise InvalidServerState("server has no EC2 instance yet")
+        try:
+            info = ec2.describe(server.instance_id, region=server.region)
+            if info.get("restoring"):
+                raise InvalidServerState("A backup is already being restored.")
+            if info["state"] != "stopped":
+                raise InvalidServerState("Stop the server before restoring a backup.")
+            # Looked up within this server's backups, so another server's can't be requested.
+            backup = next((b for b in ec2.list_backups(server.id, region=server.region)
+                           if b["snapshot_id"] == backup_id), None)
+            if backup is None or backup["state"] != "completed":
+                raise UnknownBackup(backup_id)
+            # Saved first, so the world being replaced can always be restored in turn.
+            safety_id = ec2.create_backup(info["volume_id"], server.id, region=server.region,
+                                          kind=ec2.PRE_RESTORE_BACKUP)
+            ec2.begin_restore(server.instance_id, backup_id, safety_id, region=server.region)
+        except (ClientError, BotoCoreError) as exc:
+            raise AWSUnavailable(AWS_ERROR) from exc
+        return RestoreStarted(server_id=server_id, backup_id=backup_id)
 
     def get_access(self, server_id: str, principal: Principal) -> AccessSettings:
         if self.settings.mock_mode:
@@ -261,6 +313,7 @@ class StatusService:
 
     def status(self, server_id: str, principal: Principal) -> ServerStatus:
         auto_stop_at = None
+        restoring = restore_failed = False
         if self.settings.mock_mode:
             if server_id not in MOCK_STATUSES:
                 raise UnknownServer(server_id)
@@ -280,6 +333,7 @@ class StatusService:
                 # Never substitute mock data or expose AWS exception details.
                 raise AWSUnavailable from exc
             state = info["state"]
+            restoring, restore_failed = info.get("restoring", False), info.get("restore_failed", False)
             minecraft = info["minecraft"]
             ready = minecraft is not None
             ip = info["ip"] if state == "running" else None
@@ -292,7 +346,7 @@ class StatusService:
                             players_online=minecraft["online"] if minecraft else None,
                             players_max=minecraft["max"] if minecraft else None,
                             minecraft_version=minecraft["version"] if minecraft else None,
-                            auto_stop_at=auto_stop_at)
+                            auto_stop_at=auto_stop_at, restoring=restoring, restore_failed=restore_failed)
 
     def start(self, server_id: str, principal: Principal) -> ServerAction:
         return self._change_state(server_id, principal, ec2.start, mock_result={"stopped": "pending"})
@@ -308,6 +362,8 @@ class StatusService:
             return ServerAction(server_id=server_id, instance_state=mock_result.get(current, current))
         server = self._accessible_instance(principal, server_id)
         try:
+            if ec2.describe(server.instance_id, region=server.region).get("restoring"):
+                raise InvalidServerState("A backup is being restored. Try again when it finishes.")
             state = action(server.instance_id, region=server.region)
         except ec2.InvalidState as exc:
             raise InvalidServerState(str(exc)) from exc

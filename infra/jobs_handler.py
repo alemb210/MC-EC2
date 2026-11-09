@@ -12,4 +12,7 @@ import jobs  # noqa: E402
 def handler(event, context):
     settings = Settings.from_env()
     stopped = jobs.auto_stop(settings.auto_stop_idle_minutes, region=settings.aws_region)
-    return {"stopped": stopped}
+    restores = jobs.advance_restores(region=settings.aws_region)
+    backed_up = jobs.back_up_worlds(region=settings.aws_region)
+    pruned = jobs.prune_backups(region=settings.aws_region)
+    return {"stopped": stopped, "restores": restores, "backed_up": backed_up, "pruned": pruned}

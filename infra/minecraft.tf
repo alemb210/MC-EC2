@@ -198,7 +198,10 @@ resource "aws_instance" "minecraft" {
   lifecycle {
     prevent_destroy = true
     # Changing any of these would replace the instance (and its world data).
-    # IdleSince is managed by the auto-stop job.
-    ignore_changes = [ami, user_data, user_data_base64, associate_public_ip_address, tags["IdleSince"]]
+    # These tags are managed by the scheduled jobs and the restore API.
+    ignore_changes = [
+      ami, user_data, user_data_base64, associate_public_ip_address, tags["IdleSince"], tags["NeedsBackup"],
+      tags["RestoreTo"], tags["RestoreSafety"], tags["RestoreTask"], tags["RestoreFailed"],
+    ]
   }
 }

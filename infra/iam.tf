@@ -7,6 +7,39 @@ locals {
   ec2_arn = "arn:aws:ec2:us-east-1:${data.aws_caller_identity.current.account_id}"
   # One parameter per server, created and deleted by the API (backend/player_access.py).
   access_parameters_arn = "arn:aws:ssm:us-east-1:${data.aws_caller_identity.current.account_id}:parameter/mc-ec2/servers/*"
+  snapshots_arn         = "arn:aws:ec2:us-east-1::snapshot/*"
+  # Not limited by volume tag: older and replaced root volumes don't have one.
+  snapshot_volumes_statement = {
+    Sid      = "SnapshotVolumes"
+    Effect   = "Allow"
+    Action   = "ec2:CreateSnapshot"
+    Resource = "${local.ec2_arn}:volume/*"
+  }
+  create_backups_statement = {
+    Sid       = "CreateTaggedBackups"
+    Effect    = "Allow"
+    Action    = "ec2:CreateSnapshot"
+    Resource  = local.snapshots_arn
+    Condition = { StringEquals = { "aws:RequestTag/Project" = "mc-ec2" } }
+  }
+  tag_backups_statement = {
+    Sid       = "TagBackupsAtCreation"
+    Effect    = "Allow"
+    Action    = "ec2:CreateTags"
+    Resource  = local.snapshots_arn
+    Condition = { StringEquals = { "ec2:CreateAction" = "CreateSnapshot" } }
+  }
+  # Requiring Kind keeps manual snapshots, which only have Project, out of reach.
+  delete_backups_statement = {
+    Sid      = "DeleteWorldBackups"
+    Effect   = "Allow"
+    Action   = "ec2:DeleteSnapshot"
+    Resource = local.snapshots_arn
+    Condition = {
+      StringEquals = { "aws:ResourceTag/Project" = "mc-ec2" }
+      StringLike   = { "aws:ResourceTag/Kind" = "*" }
+    }
+  }
 }
 
 resource "aws_iam_role" "api" {
@@ -119,6 +152,26 @@ resource "aws_iam_role_policy" "api" {
         Effect   = "Allow"
         Action   = "cognito-idp:ListUsers"
         Resource = aws_cognito_user_pool.main.arn
+      },
+      {
+        Sid      = "ReadBackups"
+        Effect   = "Allow"
+        Action   = "ec2:DescribeSnapshots"
+        Resource = "*"
+      },
+      local.delete_backups_statement,
+      local.snapshot_volumes_statement,
+      local.create_backups_statement,
+      local.tag_backups_statement,
+      {
+        Sid      = "RequestRestores"
+        Effect   = "Allow"
+        Action   = ["ec2:CreateTags", "ec2:DeleteTags"]
+        Resource = "${local.ec2_arn}:instance/*"
+        Condition = {
+          StringEquals                = { "aws:ResourceTag/Project" = "mc-ec2" }
+          "ForAllValues:StringEquals" = { "aws:TagKeys" = ["RestoreTo", "RestoreSafety", "RestoreTask", "RestoreFailed", "NeedsBackup"] }
+        }
       },
       {
         Sid    = "DataApi"

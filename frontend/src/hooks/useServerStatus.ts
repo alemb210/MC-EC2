@@ -10,7 +10,7 @@ const RUNNING_POLL_MS = 60000;
 
 // Keep polling while AWS or Minecraft is still transitioning.
 export function isSettling(s: ServerStatus): boolean {
-  return s.provisioning_state === "awaiting_instance" ||
+  return s.restoring || s.provisioning_state === "awaiting_instance" ||
     s.instance_state === "pending" || s.instance_state === "stopping" ||
     (s.instance_state === "running" && !s.minecraft_ready);
 }

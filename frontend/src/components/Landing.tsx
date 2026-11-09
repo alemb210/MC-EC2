@@ -1,7 +1,7 @@
 type LandingProps = { onEnter: () => void; signedIn?: boolean; accountEmail?: string; onLogout?: () => void };
 
 const questions = [
-  ["Will our world still be there next time?", "Yes. Stopping your server keeps its world for the next session. Deleting the server permanently removes it and its world. Backups are not currently available."],
+  ["Will our world still be there next time?", "Yes. Stopping your server keeps its world for the next session. A backup is saved after each session, and the owner can restore any of the last seven. Deleting the server permanently removes it, its world, and its backups."],
   ["Does the server start when someone joins?", "Someone needs to log in and start it first. Startup takes a few minutes; wait until the dashboard says Minecraft is ready before joining."],
   ["What if we forget to stop it?", "Idle shutdown stops an empty server after a period of time. Your world stays between sessions."],
   ["Can my friends start the server too?", "Yes. The owner can add friends with confirmed MCWorldControl accounts as admins. They can start and stop the server and manage player access."],

@@ -8,10 +8,10 @@ from auth import Principal, build_verifier, current_user_dependency
 from config import Settings
 from db import DatabaseUnavailable, build_repository
 from db import AdminLimitReached, ServerLimitReached
-from models import (AccessSettings, AccessUpdated, AdminCreate, HealthResponse, ServerAction, ServerAdmin,
-                    ServerCreate, ServerCreated, ServerRename, ServerStatus, ServerSummary, UserResponse)
+from models import (AccessSettings, AccessUpdated, AdminCreate, Backup, HealthResponse, RestoreStarted, ServerAction,
+                    ServerAdmin, ServerCreate, ServerCreated, ServerRename, ServerStatus, ServerSummary, UserResponse)
 from service import (AWSUnavailable, CreationUnavailable, InvalidServerState, NotPermitted, StatusService,
-                     UnknownAdmin, UnknownPlayers, UnknownServer, UnknownUser)
+                     UnknownAdmin, UnknownBackup, UnknownPlayers, UnknownServer, UnknownUser)
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 NOT_BUILT_PAGE = ("<!doctype html><title>MC-EC2</title>"
@@ -67,6 +67,8 @@ def create_app(settings: Settings | None = None, verifier=None, repository=None)
             return fn(*args)
         except UnknownServer:
             raise HTTPException(404, "Unknown server ID") from None
+        except UnknownBackup:
+            raise HTTPException(404, "That backup isn't available.") from None
         except UnknownUser:
             raise HTTPException(404, "No user with that email.") from None
         except UnknownAdmin:
@@ -120,8 +122,20 @@ def create_app(settings: Settings | None = None, verifier=None, repository=None)
     @app.delete("/servers/{server_id}", status_code=204,
                 responses={**OWNER_ERRORS, 409: {"description": "Server is protected"}})
     def delete_server(server_id: str, principal: Principal = Depends(current_user)) -> None:
-        """Permanently deletes the server and its world. Safe to retry after a failure."""
+        """Permanently deletes the server, its world and its backups. Safe to retry after a failure."""
         run(service.delete_server, server_id, principal)
+
+    @app.get("/servers/{server_id}/backups", response_model=list[Backup], responses=SERVER_ERRORS)
+    def list_backups(server_id: str, principal: Principal = Depends(current_user)):
+        """Lists the server's world backups, newest first."""
+        return run(service.list_backups, server_id, principal)
+
+    @app.post("/servers/{server_id}/backups/{backup_id}/restore", response_model=RestoreStarted, status_code=202,
+              responses={**OWNER_ERRORS, 409: {"description": "Server isn't stopped, or a restore is in progress"}})
+    def restore_backup(server_id: str, backup_id: str, principal: Principal = Depends(current_user)):
+        """Starts replacing a stopped server's world with a backup, first saving the current world as
+        a backup. The status route's restoring field stays true until it finishes."""
+        return run(service.restore_backup, server_id, backup_id, principal)
 
     @app.get("/servers/{server_id}/access", response_model=AccessSettings, responses=SERVER_ERRORS)
     def get_access(server_id: str, principal: Principal = Depends(current_user)):

@@ -50,8 +50,48 @@ resource "aws_iam_role_policy" "jobs" {
         Resource = "${local.ec2_arn}:instance/*"
         Condition = {
           StringEquals                = { "aws:ResourceTag/Project" = "mc-ec2" }
-          "ForAllValues:StringEquals" = { "aws:TagKeys" = ["IdleSince"] }
+          "ForAllValues:StringEquals" = { "aws:TagKeys" = ["IdleSince", "NeedsBackup", "RestoreTo", "RestoreSafety", "RestoreTask", "RestoreFailed"] }
         }
+      },
+      {
+        Sid      = "ReadBackups"
+        Effect   = "Allow"
+        Action   = "ec2:DescribeSnapshots"
+        Resource = "*"
+      },
+      local.snapshot_volumes_statement,
+      local.create_backups_statement,
+      local.tag_backups_statement,
+      local.delete_backups_statement,
+      {
+        Sid       = "StartRestoringInstances"
+        Effect    = "Allow"
+        Action    = "ec2:StartInstances"
+        Resource  = "${local.ec2_arn}:instance/*"
+        Condition = { StringEquals = { "aws:ResourceTag/Project" = "mc-ec2" } }
+      },
+      {
+        Sid      = "ReadRestoreTasks"
+        Effect   = "Allow"
+        Action   = "ec2:DescribeReplaceRootVolumeTasks"
+        Resource = "*"
+      },
+      {
+        Sid       = "ReplaceRootOfTaggedInstances"
+        Effect    = "Allow"
+        Action    = "ec2:CreateReplaceRootVolumeTask"
+        Resource  = "${local.ec2_arn}:instance/*"
+        Condition = { StringEquals = { "aws:ResourceTag/Project" = "mc-ec2" } }
+      },
+      {
+        Sid    = "ReplaceRootResources"
+        Effect = "Allow"
+        Action = "ec2:CreateReplaceRootVolumeTask"
+        Resource = [
+          local.snapshots_arn,
+          "${local.ec2_arn}:volume/*",
+          "${local.ec2_arn}:replace-root-volume-task/*",
+        ]
       },
     ]
   })

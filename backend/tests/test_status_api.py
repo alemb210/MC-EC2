@@ -145,6 +145,10 @@ def aws_instance(monkeypatch, state="running", ip="203.0.113.10"):
     monkeypatch.setattr(ec2, "ec2", client)
     return client
 
+def backup_snapshot(snapshot_id):
+    return {"SnapshotId": snapshot_id, "State": "completed", "StartTime": datetime(2026, 11, 1, tzinfo=timezone.utc),
+            "Tags": [{"Key": "ServerId", "Value": SERVER_ID}, {"Key": "Kind", "Value": "session"}]}
+
 # --- Health, docs, configuration ---
 
 @pytest.mark.parametrize("mode", [False, True])
@@ -158,7 +162,8 @@ def test_docs_and_scope():
         assert set(api.get("/openapi.json").json()["paths"]) == {
             "/health", "/me", "/servers", "/servers/{server_id}", "/servers/{server_id}/status",
             "/servers/{server_id}/start", "/servers/{server_id}/stop", "/servers/{server_id}/access",
-            "/servers/{server_id}/admins", "/servers/{server_id}/admins/{user_id}"}
+            "/servers/{server_id}/admins", "/servers/{server_id}/admins/{user_id}", "/servers/{server_id}/backups",
+            "/servers/{server_id}/backups/{backup_id}/restore"}
 
 def test_environment_configuration(monkeypatch):
     monkeypatch.setenv("MOCK_MODE", "false")
@@ -201,11 +206,13 @@ def test_frontend_built_is_served(monkeypatch, tmp_path):
 
 # --- Mock mode (no Cognito, no database, no AWS) ---
 
-NO_PLAYERS = {"players_online": None, "players_max": None, "minecraft_version": None, "auto_stop_at": None}
+NO_PLAYERS = {"players_online": None, "players_max": None, "minecraft_version": None, "auto_stop_at": None,
+              "restoring": False, "restore_failed": False}
 
 @pytest.mark.parametrize("server,state,ready,address,players", [
     ("demo-server", "running", True, "203.0.113.10:25565",
-     {"players_online": 2, "players_max": 20, "minecraft_version": "1.21.4", "auto_stop_at": None}),
+     {"players_online": 2, "players_max": 20, "minecraft_version": "1.21.4", "auto_stop_at": None,
+      "restoring": False, "restore_failed": False}),
     ("demo-starting", "running", False, "203.0.113.11:25565", NO_PLAYERS),
     ("demo-stopped", "stopped", False, None, NO_PLAYERS)])
 def test_mock_status(server, state, ready, address, players):
@@ -599,6 +606,8 @@ ROUTES = [
     ("get", f"/servers/{SERVER_ID}/admins", None, 200, 403),
     ("post", f"/servers/{SERVER_ID}/admins", {"email": "friend@example.com"}, 201, 403),
     ("delete", f"/servers/{SERVER_ID}/admins/{NEW_SERVER_ID}", None, 204, 403),
+    ("get", f"/servers/{SERVER_ID}/backups", None, 200, 200),
+    ("post", f"/servers/{SERVER_ID}/backups/snap-1/restore", None, 202, 403),
 ]
 
 @pytest.fixture
@@ -608,6 +617,8 @@ def stub_aws(monkeypatch):
     client.describe_instances.side_effect = lambda **kw: (
         {"Reservations": []} if "Filters" in kw else
         {"Reservations": [{"Instances": [{"State": {"Name": "stopped"}, "PublicIpAddress": None}]}]})
+    client.describe_snapshots.return_value = {"Snapshots": [backup_snapshot("snap-1")]}
+    client.create_snapshot.return_value = {"SnapshotId": "snap-safety"}
     ssm = Mock()
     ssm.get_parameter.side_effect = ClientError({"Error": {"Code": "ParameterNotFound"}}, "GetParameter")
     monkeypatch.setattr(player_access, "ssm", ssm)
@@ -646,7 +657,7 @@ def test_permission_matrix(stub_aws, method, path, body, owner_status, admin_sta
 def test_every_server_route_is_in_the_permission_matrix():
     paths = create_app(Settings(mock_mode=True)).openapi()["paths"]
     documented = {(method, path) for path, ops in paths.items() for method in ops if path.startswith("/servers/")}
-    tested = {(m, p.replace(SERVER_ID, "{server_id}").replace(NEW_SERVER_ID, "{user_id}")) for m, p, *_ in ROUTES}
+    tested = {(m, p.replace(SERVER_ID, "{server_id}").replace(NEW_SERVER_ID, "{user_id}").replace("snap-1", "{backup_id}")) for m, p, *_ in ROUTES}
     assert documented == tested
 
 # --- Names ---
@@ -694,17 +705,128 @@ def test_mock_rename():
     response = TestClient(create_app(Settings(mock_mode=True))).patch("/servers/demo-server", json={"name": "New"})
     assert (response.status_code, response.json()["name"]) == (200, "New")
 
+# --- Backups and restore ---
+
+RESTORE_PATH = f"/servers/{SERVER_ID}/backups/snap-1/restore"
+
+def restore_client(monkeypatch, state="stopped", tags=(), snapshots=None):
+    client = aws_instance(monkeypatch, state)
+    client.describe_instances.return_value = {"Reservations": [{"Instances": [{
+        "State": {"Name": state}, "RootDeviceName": "/dev/xvda", "Tags": list(tags),
+        "BlockDeviceMappings": [{"DeviceName": "/dev/xvda", "Ebs": {"VolumeId": "vol-1"}}]}]}]}
+    client.describe_snapshots.return_value = {"Snapshots": [backup_snapshot("snap-1")] if snapshots is None else snapshots}
+    client.create_snapshot.return_value = {"SnapshotId": "snap-safety"}
+    return client
+
+def test_list_backups_newest_first_without_failed(monkeypatch):
+    newer = {**backup_snapshot("new"), "StartTime": datetime(2026, 11, 2, tzinfo=timezone.utc), "State": "pending"}
+    client = restore_client(monkeypatch, snapshots=[backup_snapshot("old"), newer, {**backup_snapshot("bad"), "State": "error"}])
+    body = real_api(FakeRepository()).get(f"/servers/{SERVER_ID}/backups", headers=auth()).json()
+    assert [(b["backup_id"], b["state"]) for b in body] == [("new", "pending"), ("old", "completed")]
+
+def test_restore_saves_the_world_then_hands_over_to_the_job(monkeypatch):
+    client = restore_client(monkeypatch, tags=[{"Key": "NeedsBackup", "Value": "true"}])
+    response = real_api(FakeRepository()).post(RESTORE_PATH, headers=auth())
+    assert (response.status_code, response.json()) == (202, {"server_id": SERVER_ID, "backup_id": "snap-1"})
+    kwargs = client.create_snapshot.call_args.kwargs
+    assert kwargs["VolumeId"] == "vol-1"
+    assert {"Key": "Kind", "Value": "pre-restore"} in kwargs["TagSpecifications"][0]["Tags"]
+    client.create_tags.assert_called_once_with(Resources=["i-test"], Tags=[
+        {"Key": "RestoreTo", "Value": "snap-1"}, {"Key": "RestoreSafety", "Value": "snap-safety"}])
+    client.start_instances.assert_not_called()
+    client.create_replace_root_volume_task.assert_not_called()
+
+@pytest.mark.parametrize("state", ["running", "pending", "stopping"])
+def test_restore_needs_a_stopped_server(monkeypatch, state):
+    client = restore_client(monkeypatch, state=state)
+    assert real_api(FakeRepository()).post(RESTORE_PATH, headers=auth()).status_code == 409
+    client.create_snapshot.assert_not_called()
+
+def test_only_one_restore_at_a_time(monkeypatch):
+    client = restore_client(monkeypatch, tags=[{"Key": "RestoreTo", "Value": "snap-0"}])
+    assert real_api(FakeRepository()).post(RESTORE_PATH, headers=auth()).status_code == 409
+    client.create_snapshot.assert_not_called()
+
+@pytest.mark.parametrize("snapshots", [[], [{**backup_snapshot("snap-1"), "State": "pending"}]])
+def test_restore_rejects_missing_or_unfinished_backup(monkeypatch, snapshots):
+    client = restore_client(monkeypatch, snapshots=snapshots)
+    assert real_api(FakeRepository()).post(RESTORE_PATH, headers=auth()).status_code == 404
+    client.create_snapshot.assert_not_called()
+
+def test_restore_only_searches_this_servers_backups(monkeypatch):
+    client = restore_client(monkeypatch)
+    real_api(FakeRepository()).post(RESTORE_PATH, headers=auth())
+    assert {"Name": "tag:ServerId", "Values": [SERVER_ID]} in client.describe_snapshots.call_args.kwargs["Filters"]
+
+def test_restore_aws_failure_is_a_502_and_changes_nothing(monkeypatch):
+    client = restore_client(monkeypatch)
+    client.create_snapshot.side_effect = ClientError({"Error": {"Code": "SnapshotLimitExceeded"}}, "CreateSnapshot")
+    assert real_api(FakeRepository()).post(RESTORE_PATH, headers=auth()).status_code == 502
+    client.create_tags.assert_not_called()
+
+@pytest.mark.parametrize("action", ["start", "stop"])
+def test_start_and_stop_wait_for_a_restore(monkeypatch, action):
+    client = restore_client(monkeypatch, tags=[{"Key": "RestoreTo", "Value": "snap-1"}])
+    assert real_api(FakeRepository()).post(f"/servers/{SERVER_ID}/{action}", headers=auth()).status_code == 409
+    client.start_instances.assert_not_called()
+    client.stop_instances.assert_not_called()
+
+def test_status_reports_restore_progress(monkeypatch):
+    restore_client(monkeypatch, tags=[{"Key": "RestoreTo", "Value": "s"}, {"Key": "RestoreFailed", "Value": "x"}])
+    body = real_api(FakeRepository()).get(f"/servers/{SERVER_ID}/status", headers=auth()).json()
+    assert (body["restoring"], body["restore_failed"]) == (True, True)
+
+def test_mock_backups_and_restore():
+    api = TestClient(create_app(Settings(mock_mode=True)))
+    backup = api.get("/servers/demo-stopped/backups").json()[0]["backup_id"]
+    assert api.post(f"/servers/demo-stopped/backups/{backup}/restore").status_code == 202
+    assert api.post("/servers/demo-stopped/backups/nope/restore").status_code == 404
+    assert api.post(f"/servers/demo-shared/backups/{backup}/restore").status_code == 403
+
 # --- Deletion ---
 
 def delete_client(monkeypatch, tagged=()):
     client = Mock()
     client.describe_instances.return_value = {
         "Reservations": [{"Instances": [{"InstanceId": i} for i in tagged]}] if tagged else []}
+    client.describe_snapshots.return_value = {"Snapshots": []}
     monkeypatch.setattr(ec2, "ec2", client)
     ssm = Mock()
     monkeypatch.setattr(player_access, "ssm", ssm)
     client.ssm = ssm
     return client
+
+def test_delete_removes_only_this_servers_backups_after_terminating(monkeypatch):
+    client = delete_client(monkeypatch)
+    client.describe_snapshots.return_value = {"Snapshots": [backup_snapshot("snap-1"), backup_snapshot("snap-2")]}
+    assert real_api(FakeRepository()).delete(f"/servers/{SERVER_ID}", headers=auth()).status_code == 204
+    filters = client.describe_snapshots.call_args.kwargs["Filters"]
+    assert {"Name": "tag:ServerId", "Values": [SERVER_ID]} in filters
+    assert {"Name": "tag-key", "Values": ["Kind"]} in filters
+    assert [c.kwargs["SnapshotId"] for c in client.delete_snapshot.call_args_list] == ["snap-1", "snap-2"]
+    names = [c[0] for c in client.method_calls]
+    assert names.index("terminate_instances") < names.index("describe_snapshots")
+
+def test_delete_backup_failure_keeps_row_and_retry_finishes(monkeypatch):
+    client = delete_client(monkeypatch)
+    client.describe_snapshots.return_value = {"Snapshots": [backup_snapshot("snap-1")]}
+    client.delete_snapshot.side_effect = ClientError({"Error": {"Code": "InvalidSnapshot.InUse"}}, "DeleteSnapshot")
+    repository = FakeRepository()
+    api = real_api(repository)
+    assert api.delete(f"/servers/{SERVER_ID}", headers=auth()).status_code == 502
+    assert repository.servers != {}
+    client.delete_snapshot.side_effect = ClientError({"Error": {"Code": "InvalidSnapshot.NotFound"}}, "DeleteSnapshot")
+    assert api.delete(f"/servers/{SERVER_ID}", headers=auth()).status_code == 204
+    assert repository.servers == {}
+
+def test_delete_waits_for_a_restore(monkeypatch):
+    client = delete_client(monkeypatch)
+    client.describe_instances.return_value = {"Reservations": [{"Instances": [
+        {"InstanceId": "i-test", "Tags": [{"Key": "RestoreTo", "Value": "snap-1"}]}]}]}
+    repository = FakeRepository()
+    assert real_api(repository).delete(f"/servers/{SERVER_ID}", headers=auth()).status_code == 409
+    client.terminate_instances.assert_not_called()
+    assert repository.servers != {}
 
 def test_delete_terminates_then_removes_row(monkeypatch):
     client = delete_client(monkeypatch)

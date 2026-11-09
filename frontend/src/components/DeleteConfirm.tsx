@@ -3,7 +3,7 @@ import { ApiError, deleteServer, isServerGone } from "../api";
 import { useServerAction } from "../hooks/useServerAction";
 import type { AuthSession } from "../recovery";
 
-// Deleting destroys the world for good and there are no backups, so the owner types the name.
+// Deleting destroys the world and its backups for good, so the owner types the name.
 export default function DeleteConfirm({ serverId, name, playersOnline, session, onDeleted, onCancel }: {
   serverId: string;
   name: string;
@@ -31,7 +31,7 @@ export default function DeleteConfirm({ serverId, name, playersOnline, session, 
 
   return (
     <form className="panel" onSubmit={onSubmit}>
-      <p className="error">This permanently deletes the server and its world. It can't be undone.</p>
+      <p className="error">This permanently deletes the server, its world, and all of its backups. It can't be undone.</p>
       {playersOnline > 0 && <p className="error">{playersOnline} player(s) are online right now.</p>}
       <label className="field">
         Type <strong>{name}</strong> to confirm

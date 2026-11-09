@@ -83,6 +83,7 @@ describe("start and stop", () => {
       server_id: "s1", instance_state: "stopping", minecraft_ready: false,
       provisioning_state: "instance_assigned",
       connection_address: null, players_online: null, players_max: null, minecraft_version: null, auto_stop_at: null,
+      restoring: false, restore_failed: false,
     });
   });
 });

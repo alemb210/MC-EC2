@@ -14,7 +14,7 @@ const session: AuthSession = { accessToken: "tok", renew: vi.fn(), expire: vi.fn
 const statusBody = (over: Partial<ServerStatus> = {}): ServerStatus => ({
   server_id: "s1", instance_state: "stopped", provisioning_state: "instance_assigned", minecraft_ready: false,
   connection_address: null, players_online: null, players_max: null, minecraft_version: null, auto_stop_at: null,
-  ...over,
+  restoring: false, restore_failed: false, ...over,
 });
 
 const summary = (over: Partial<ServerSummary> = {}): ServerSummary => ({
@@ -543,6 +543,88 @@ describe("player access editor", () => {
     const onGone = vi.fn();
     render(<AccessEditor serverId="s1" session={session} visible onGone={onGone} />);
     await waitFor(() => expect(onGone).toHaveBeenCalledOnce());
+  });
+});
+
+describe("backups", () => {
+  const path = "/servers/s1/backups";
+  const backup = { backup_id: "snap-1", created_at: "2026-11-01T12:00:00Z", kind: "session", state: "completed" };
+  const open = async () => {
+    await screen.findByText(/Stopped|Ready to join|Restoring backup/);
+    fireEvent.click(button("Manage"));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Backups" }));
+  };
+  const restoreButton = () => screen.findByRole("button", { name: /Restore backup from/ }) as Promise<HTMLButtonElement>;
+
+  it("restores after confirming and shows progress", async () => {
+    let restoring = false;
+    const server = api({
+      "GET /servers/s1/status": () => ({ body: statusBody({ restoring }) }),
+      [`GET ${path}`]: { body: [backup] },
+      [`POST ${path}/snap-1/restore`]: () => { restoring = true; return { status: 202, body: { server_id: "s1", backup_id: "snap-1" } }; },
+    });
+    card();
+    await open();
+    fireEvent.click(await restoreButton());
+    await waitFor(() => expect(server.sent("POST", `${path}/snap-1/restore`)).toHaveLength(1));
+    await screen.findByText("Restoring backup");
+    expect(button("Start").disabled).toBe(true);
+  });
+
+  it("doesn't restore without confirmation", async () => {
+    vi.stubGlobal("confirm", vi.fn(() => false));
+    const server = api({ ...statusRoute, [`GET ${path}`]: { body: [backup] } });
+    card();
+    await open();
+    fireEvent.click(await restoreButton());
+    expect(server.sent("POST", `${path}/snap-1/restore`)).toEqual([]);
+  });
+
+  it("needs the server stopped", async () => {
+    api({ "GET /servers/s1/status": { body: statusBody({ instance_state: "running", minecraft_ready: true }) }, [`GET ${path}`]: { body: [backup] } });
+    card();
+    await open();
+    expect((await restoreButton()).disabled).toBe(true);
+    screen.getByText("Stop the server to restore a backup.");
+  });
+
+  it("can't restore a backup that's still saving", async () => {
+    api({ ...statusRoute, [`GET ${path}`]: { body: [{ ...backup, state: "pending" }] } });
+    card();
+    await open();
+    expect((await restoreButton()).disabled).toBe(true);
+  });
+
+  it("shows admins the list without a restore button", async () => {
+    api({ ...statusRoute, [`GET ${path}`]: { body: [backup] } });
+    card({ role: "admin" });
+    await open();
+    await screen.findByText(/Only the server's owner/);
+    expect(screen.queryByRole("button", { name: /Restore backup from/ })).toBeNull();
+  });
+
+  it("labels pre-restore backups and reports a failed restore", async () => {
+    api({ "GET /servers/s1/status": { body: statusBody({ restore_failed: true }) }, [`GET ${path}`]: { body: [{ ...backup, kind: "pre-restore" }] } });
+    card();
+    await open();
+    await screen.findByText(/Before a restore/);
+    screen.getByText(/The last restore didn't finish/);
+  });
+
+  it("explains when there are no backups", async () => {
+    api({ ...statusRoute, [`GET ${path}`]: { body: [] } });
+    card();
+    await open();
+    await screen.findByText(/No backups yet/);
+  });
+
+  it("shows a restore error", async () => {
+    api({ ...statusRoute, [`GET ${path}`]: { body: [backup] },
+          [`POST ${path}/snap-1/restore`]: { status: 409, body: { detail: "A backup is already being restored." } } });
+    card();
+    await open();
+    fireEvent.click(await restoreButton());
+    await screen.findByText("A backup is already being restored.");
   });
 });
 

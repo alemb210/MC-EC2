@@ -21,6 +21,14 @@ A person granted shared control of a server, including starting, stopping, renam
 An admin cannot delete the server or manage its admins.
 _Avoid_: Owner, player
 
+**Backup**:
+A saved copy of a server's world, taken after a session once the server stops. Deleted along with the server.
+_Avoid_: Snapshot
+
+**Restore**:
+Replacing a server's current world with a backup, which only its owner can do. The world being replaced is saved first.
+_Avoid_: Rollback
+
 **Player access**:
 The rules determining who may join a server in Minecraft: anyone, or only players on its allowlist.
 Player access does not grant control of the server.

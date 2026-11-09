@@ -26,6 +26,10 @@ class ServerStatus(BaseModel):
     minecraft_version: str | None = None
     # When the auto-stop job will stop this server if it stays empty; null while players are online.
     auto_stop_at: datetime | None = None
+    # A backup is being restored; starting, stopping and deleting wait until it finishes.
+    restoring: bool = False
+    # The most recent restore didn't finish.
+    restore_failed: bool = False
 
 class ServerAction(BaseModel):
     server_id: str
@@ -79,6 +83,18 @@ class AdminCreate(BaseModel):
 class ServerAdmin(BaseModel):
     user_id: str
     email: str
+
+class Backup(BaseModel):
+    backup_id: str
+    created_at: datetime
+    # session: taken after people played. pre-restore: the world as it was just before a restore.
+    kind: Literal["session", "pre-restore"]
+    # Only a completed backup can be restored.
+    state: Literal["pending", "completed"]
+
+class RestoreStarted(BaseModel):
+    server_id: str
+    backup_id: str
 
 class ServerCreated(BaseModel):
     server_id: str
